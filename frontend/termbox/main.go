@@ -1,3 +1,6 @@
+// Copyright 2013 The lime Authors.
+// Use of this source code is governed by a 2-clause
+// BSD-style license that can be found in the LICENSE file.
 package main
 
 import (
@@ -12,7 +15,7 @@ import (
 	"lime/backend/textmate"
 	"lime/backend/util"
 	"runtime/debug"
-	"strings"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -83,7 +86,8 @@ var (
 		termbox.KeyF12:        backend.KeyPress{Key: backend.F12},
 		termbox.KeyTab:        backend.KeyPress{Key: '\t'},
 	}
-	schemelut = make(map[string][2]termbox.Attribute)
+	palLut    func(col textmate.Color) termbox.Attribute
+	scheme    *textmate.Theme
 	defaultBg = termbox.ColorBlack
 	defaultFg = termbox.ColorWhite
 	blink     bool
@@ -112,20 +116,30 @@ func (t *tbfe) renderView(v *backend.View, lay layout) {
 	defer p.Exit()
 
 	sx, sy, w, h := lay.x, lay.y, lay.width, lay.height
-	sel := v.Sel()
 	vr := lay.visible
-	runes := v.Buffer().SubstrR(vr)
+	runes := v.Buffer().Substr(vr)
 	x, y := sx, sy
 	ex, ey := sx+w, sy+h
-
-	var (
-		lastScope string
-		lfg, lbg  = defaultFg, defaultBg
-	)
 
 	tab_size, ok := v.Settings().Get("tab_size", 4).(int)
 	if !ok {
 		tab_size = 4
+	}
+
+	recipie := v.Transform(scheme, vr).Transcribe()
+
+	curr := 0
+	fg, bg := defaultFg, defaultBg
+	sel := v.Sel()
+
+	caret_blink := true
+	if b, ok := v.Settings().Get("caret_blink", true).(bool); ok {
+		caret_blink = b
+	}
+
+	highlight_line := false
+	if b, ok := v.Settings().Get("highlight_line", highlight_line).(bool); ok {
+		highlight_line = b
 	}
 	caret_style := termbox.AttrUnderline
 	if b, ok := v.Settings().Get("caret_style", "underline").(string); ok {
@@ -140,71 +154,49 @@ func (t *tbfe) renderView(v *backend.View, lay layout) {
 			caret_style = termbox.AttrReverse
 		}
 	}
-	caret_blink := true
-	if b, ok := v.Settings().Get("caret_blink", true).(bool); ok {
-		caret_blink = b
+
+	if caret_blink && blink {
+		caret_style = 0
 	}
 
-	highlight_line := false
-	if b, ok := v.Settings().Get("highlight_line", highlight_line).(bool); ok {
-		highlight_line = b
-	}
+	shouldRenderLineNumbers, _ := v.Settings().Get("line_numbers", true).(bool)
 
-	// TODO: much of this belongs in backend as it's not specific to any particular frontend
-	for i := range runes {
+	line, _ := v.Buffer().RowCol(vr.Begin())
+	eofline, _ := v.Buffer().RowCol(v.Buffer().Size())
+	lineNumberRenderSize := len(intToRunes(eofline))
+
+	for i, r := range runes {
 		o := vr.Begin() + i
-		fg, bg := lfg, lbg
-		scope := v.ScopeName(o)
-		var lr Region
-		if highlight_line {
-			lr = v.Buffer().Line(o)
-		}
-		if scope != lastScope {
-			fg, bg = defaultFg, defaultBg
-			lastScope = scope
-			na := scope
-			for len(na) > 0 {
-				sn := na
-				i := strings.LastIndex(sn, " ")
-				if i != -1 {
-					sn = sn[i+1:]
+		curr = 0
+		fg, bg = defaultFg, defaultBg
+
+		if shouldRenderLineNumbers {
+			if x == 0 {
+				lineRunes := padLineRunes(intToRunes(line), lineNumberRenderSize)
+
+				for _, num := range lineRunes {
+					termbox.SetCell(x, y, num, fg, bg)
+					x++
 				}
-				if c, ok := schemelut[sn]; ok {
-					fg, bg = c[0], c[1]
-					break
-				}
-				if i2 := strings.LastIndex(na, "."); i2 == -1 {
-					break
-				} else if i > i2 {
-					na = na[:i]
-				} else {
-					na = strings.TrimSpace(na[:i2])
-				}
-			}
-			lfg, lbg = fg, bg
-		} else {
-			fg, bg = lfg, lbg
-		}
-		for _, r2 := range sel.Regions() {
-			if highlight_line && (lr.Contains(r2.A) || lr.Contains(r2.B)) {
-				// TODO: highlight color
-				bg |= termbox.AttrReverse
-				continue
-			}
-			if r2.Contains(o) {
-				if r2.Size() == 0 {
-					if !caret_blink || blink {
-						fg |= caret_style
-					}
-					break
-				} else if r2.Contains(o + 1) {
-					// TODO: selection color
-					fg |= termbox.AttrReverse
-					break
-				}
+
+				line++
 			}
 		}
-		if runes[i] == '\t' {
+
+		for curr < len(recipie) && (o >= recipie[curr].Region.Begin()) {
+			// if curr > 0 {
+			// 	curr--
+			// }
+			if o < recipie[curr].Region.End() {
+				fg = palLut(textmate.Color(recipie[curr].Flavour.Foreground))
+				bg = palLut(textmate.Color(recipie[curr].Flavour.Background))
+			}
+			curr++
+		}
+		if sel.Contains(Region{o, o}) {
+			fg = fg | caret_style
+		}
+		if r == '\t' {
 			add := (x + 1 + (tab_size - 1)) &^ (tab_size - 1)
 			for x < add {
 				if x < ex {
@@ -214,13 +206,13 @@ func (t *tbfe) renderView(v *backend.View, lay layout) {
 				x++
 			}
 			continue
-		} else if runes[i] == '\n' {
-			for ; x < ex; x++ {
-				termbox.SetCell(x, y, ' ', fg, bg)
-				if !highlight_line {
-					break
-				}
-			}
+		} else if r == '\n' {
+			// for ; x < ex; x++ {
+			// 	termbox.SetCell(x, y, ' ', fg, bg)
+			// 	if !highlight_line {
+			// 		break
+			// 	}
+			// }
 			x = sx
 			y++
 			if y > ey {
@@ -229,9 +221,20 @@ func (t *tbfe) renderView(v *backend.View, lay layout) {
 			continue
 		}
 		if x < ex {
-			termbox.SetCell(x, y, runes[i], fg, bg)
+			termbox.SetCell(x, y, r, fg, bg)
 		}
 		x++
+	}
+
+	if shouldRenderLineNumbers {
+		if x == 0 {
+			lineRunes := padLineRunes(intToRunes(line), lineNumberRenderSize)
+
+			for _, num := range lineRunes {
+				termbox.SetCell(x, y, num, fg, bg)
+				x++
+			}
+		}
 	}
 }
 
@@ -259,37 +262,38 @@ func (t *tbfe) Show(v *backend.View, r Region) {
 	t.lock.Lock()
 	l := t.layout[v]
 	t.lock.Unlock()
-	if !l.visible.Covers(r) {
-		p := util.Prof.Enter("show")
-		defer p.Exit()
-
-		lv := l.visible
-
-		s1, _ := v.Buffer().RowCol(lv.Begin())
-		e1, _ := v.Buffer().RowCol(lv.End())
-		s2, _ := v.Buffer().RowCol(r.Begin())
-		e2, _ := v.Buffer().RowCol(r.End())
-
-		r1 := Region{s1, e1}
-		r2 := Region{s2, e2}
-
-		r3 := r1.Cover(r2)
-		diff := 0
-		if d1, d2 := Abs(r1.Begin()-r3.Begin()), Abs(r1.End()-r3.End()); d1 > d2 {
-			diff = r3.Begin() - r1.Begin()
-		} else {
-			diff = r3.End() - r1.End()
-		}
-		r3.A = r1.Begin() + diff
-		r3.B = r1.End() + diff
-
-		r3 = t.clip(v, r3.A, r3.B)
-		l.visible = r3
-		t.lock.Lock()
-		t.layout[v] = l
-		t.lock.Unlock()
-		t.render()
+	if l.visible.Covers(r) {
+		return
 	}
+	p := util.Prof.Enter("show")
+	defer p.Exit()
+
+	lv := l.visible
+
+	s1, _ := v.Buffer().RowCol(lv.Begin())
+	e1, _ := v.Buffer().RowCol(lv.End())
+	s2, _ := v.Buffer().RowCol(r.Begin())
+	e2, _ := v.Buffer().RowCol(r.End())
+
+	r1 := Region{s1, e1}
+	r2 := Region{s2, e2}
+
+	r3 := r1.Cover(r2)
+	diff := 0
+	if d1, d2 := Abs(r1.Begin()-r3.Begin()), Abs(r1.End()-r3.End()); d1 > d2 {
+		diff = r3.Begin() - r1.Begin()
+	} else {
+		diff = r3.End() - r1.End()
+	}
+	r3.A = r1.Begin() + diff
+	r3.B = r1.End() + diff
+
+	r3 = t.clip(v, r3.A, r3.B)
+	l.visible = r3
+	t.lock.Lock()
+	t.layout[v] = l
+	t.lock.Unlock()
+	t.render()
 }
 
 func (t *tbfe) VisibleRegion(v *backend.View) Region {
@@ -399,9 +403,6 @@ func (t *tbfe) loop() {
 	ed.LogInput(false)
 	ed.LogCommands(false)
 	c := ed.Console()
-	var (
-		scheme *textmate.Theme
-	)
 	if sc, err := textmate.LoadTheme("../../3rdparty/bundles/TextMate-Themes/GlitterBomb.tmTheme"); err != nil {
 		log4go.Error(err)
 	} else {
@@ -409,7 +410,6 @@ func (t *tbfe) loop() {
 	}
 
 	var (
-		palLut  func(col textmate.Color) termbox.Attribute
 		pal     = make([]termbox.RGB, 0, 256)
 		mode256 bool
 	)
@@ -459,7 +459,9 @@ func (t *tbfe) loop() {
 				}
 			}
 			l := len(pal)
+			log4go.Debug("Adding colour: %d %+v %+v", l, col, tc)
 			pal = append(pal, tc)
+			termbox.SetColorPalette(pal)
 			return termbox.Attribute(l)
 		}
 	}
@@ -480,10 +482,14 @@ func (t *tbfe) loop() {
 				defaultBg = bi
 			}
 		}
-		schemelut[s.Scope] = [2]termbox.Attribute{fi, bi}
-	}
-	if mode256 {
-		termbox.SetColorPalette(pal)
+		for _, setting := range []string{"caret", "highlight", "invisibles", "selection"} {
+			if col, ok := s.Settings[setting]; ok {
+				i := palLut(col)
+				if setting == "selection" {
+					fmt.Println(col, i)
+				}
+			}
+		}
 	}
 	evchan := make(chan termbox.Event, 32)
 	defer func() {
@@ -580,6 +586,28 @@ func (t *tbfe) loop() {
 		timer.Stop()
 		p.Exit()
 	}
+}
+
+func intToRunes(n int) (runes []rune) {
+	lineStr := strconv.FormatInt(int64(n), 10)
+
+	return []rune(lineStr)
+}
+
+func padLineRunes(line []rune, totalLineSize int) (padded []rune) {
+	currentLineSize := len(line)
+	if currentLineSize < totalLineSize {
+		padding := (totalLineSize - currentLineSize)
+
+		for i := 0; i < padding; i++ {
+			padded = append(padded, ' ')
+		}
+	}
+
+	padded = append(padded, line...)
+	padded = append(padded, ' ')
+
+	return
 }
 
 func main() {

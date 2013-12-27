@@ -1,3 +1,7 @@
+// Copyright 2013 The lime Authors.
+// Use of this source code is governed by a 2-clause
+// BSD-style license that can be found in the LICENSE file.
+
 package textmate
 
 import (
@@ -7,6 +11,7 @@ import (
 	"image/color"
 	"io/ioutil"
 	"lime/backend/loaders"
+	"lime/backend/render"
 	"strconv"
 	"strings"
 )
@@ -74,13 +79,12 @@ func (s *Settings) UnmarshalJSON(data []byte) error {
 	for k, v := range tmp {
 		if strings.HasPrefix(k, "font") {
 			continue
-		} else {
-			var c Color
-			if err := json.Unmarshal(v, &c); err != nil {
-				return err
-			}
-			(*s)[k] = c
 		}
+		var c Color
+		if err := json.Unmarshal(v, &c); err != nil {
+			return err
+		}
+		(*s)[k] = c
 	}
 	return nil
 }
@@ -108,4 +112,28 @@ func (t *Theme) ClosestMatchingSetting(scope string) *ScopeSetting {
 		}
 	}
 	return &t.Settings[0]
+}
+
+func (t *Theme) Spice(vr *render.ViewRegions) (ret render.Flavour) {
+	if len(t.Settings) == 0 {
+		return
+	}
+	def := &t.Settings[0]
+
+	s := t.ClosestMatchingSetting(vr.Scope)
+	fg, ok := s.Settings["foreground"]
+	if !ok {
+		fg = def.Settings["foreground"]
+	}
+	ret.Foreground = render.Colour(fg)
+	bname := "background"
+	if vr.Flags&render.SELECTION != 0 {
+		bname = "selection"
+	}
+	bg, ok := s.Settings[bname]
+	if !ok {
+		bg = def.Settings[bname]
+	}
+	ret.Background = render.Colour(bg)
+	return
 }

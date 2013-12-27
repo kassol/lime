@@ -1,3 +1,7 @@
+// Copyright 2013 The lime Authors.
+// Use of this source code is governed by a 2-clause
+// BSD-style license that can be found in the LICENSE file.
+
 package render
 
 import (
@@ -57,4 +61,10 @@ func (vr *ViewRegions) Cull(viewport text.Region) {
 	}
 	vr.Regions.Clear()
 	vr.Regions.AddAll(nr)
+}
+
+func (vr *ViewRegions) Clone() ViewRegions {
+	ret := ViewRegions{Scope: vr.Scope, Icon: vr.Icon, Flags: vr.Flags}
+	ret.Regions.AddAll(vr.Regions.Regions())
+	return ret
 }

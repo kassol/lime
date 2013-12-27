@@ -1,3 +1,7 @@
+// Copyright 2013 The lime Authors.
+// Use of this source code is governed by a 2-clause
+// BSD-style license that can be found in the LICENSE file.
+
 package sublime
 
 import (
@@ -7,8 +11,6 @@ import (
 	"lime/3rdparty/libs/gopy/lib"
 	"lime/backend"
 	"lime/backend/util"
-
-	//	"time"
 )
 
 var (
@@ -35,6 +37,7 @@ type (
 	CommandGlue struct {
 		py.BaseObject
 		inner py.Object
+		args  backend.Args
 	}
 	WindowCommandGlue struct {
 		py.BaseObject
@@ -49,6 +52,11 @@ type (
 		CommandGlue
 	}
 )
+
+func (c *CommandGlue) Init(args backend.Args) error {
+	c.args = args
+	return nil
+}
 
 func (c *CommandGlue) BypassUndo() bool {
 	return false
@@ -91,24 +99,24 @@ func (c *CommandGlue) callBool(name string, args backend.Args) bool {
 
 	if r, err = c.CallMethodObjArgs(name, pyargs); err != nil {
 		log4go.Error(err)
-	} else {
-		defer r.Decref()
-		if r, ok := r.(*py.Bool); ok {
-			return r.Bool()
-		}
+		return true
+	}
+	defer r.Decref()
+	if r, ok := r.(*py.Bool); ok {
+		return r.Bool()
 	}
 	return true
 }
 
-func (c *CommandGlue) IsEnabled(args backend.Args) bool {
-	return c.callBool("is_enabled", args)
+func (c *CommandGlue) IsEnabled() bool {
+	return c.callBool("is_enabled", c.args)
 }
 
-func (c *CommandGlue) IsVisible(args backend.Args) bool {
-	return c.callBool("is_visible", args)
+func (c *CommandGlue) IsVisible() bool {
+	return c.callBool("is_visible", c.args)
 }
 
-func (c *CommandGlue) Description(args backend.Args) string {
+func (c *CommandGlue) Description() string {
 	gs := py.GilState_Ensure()
 	defer gs.Release()
 
@@ -116,7 +124,7 @@ func (c *CommandGlue) Description(args backend.Args) string {
 		pyargs, r py.Object
 		err       error
 	)
-	if pyargs, err = c.CreatePyArgs(args); err != nil {
+	if pyargs, err = c.CreatePyArgs(c.args); err != nil {
 		log4go.Error(err)
 		return ""
 	}
@@ -124,11 +132,11 @@ func (c *CommandGlue) Description(args backend.Args) string {
 
 	if r, err = c.CallMethodObjArgs("description", pyargs); err != nil {
 		log4go.Error(err)
-	} else {
-		defer r.Decref()
-		if r, ok := r.(*py.Unicode); ok {
-			return r.String()
-		}
+		return ""
+	}
+	defer r.Decref()
+	if r, ok := r.(*py.Unicode); ok {
+		return r.String()
 	}
 	return ""
 }
@@ -143,7 +151,7 @@ func pyError(err error) error {
 	// }
 	return fmt.Errorf("%v", err)
 }
-func (c *TextCommandGlue) Run(v *backend.View, e *backend.Edit, args backend.Args) error {
+func (c *TextCommandGlue) Run(v *backend.View, e *backend.Edit) error {
 	l := py.NewLock()
 	defer l.Unlock()
 
@@ -163,7 +171,7 @@ func (c *TextCommandGlue) Run(v *backend.View, e *backend.Edit, args backend.Arg
 	}
 	defer pye.Decref()
 
-	if pyargs, err = c.CreatePyArgs(args); err != nil {
+	if pyargs, err = c.CreatePyArgs(c.args); err != nil {
 		return pyError(err)
 	}
 	defer pyargs.Decref()
@@ -198,19 +206,19 @@ func (c *TextCommandGlue) Run(v *backend.View, e *backend.Edit, args backend.Arg
 		if err != nil {
 			return pyError(err)
 		}
-	} else {
-		ret, err := obj.Base().CallMethodObjArgs("run__", pye, pyargs)
-		if ret != nil {
-			ret.Decref()
-		}
-		if err != nil {
-			return pyError(err)
-		}
+		return nil
+	}
+	ret, err := obj.Base().CallMethodObjArgs("run__", pye, pyargs)
+	if ret != nil {
+		ret.Decref()
+	}
+	if err != nil {
+		return pyError(err)
 	}
 	return nil
 }
 
-func (c *WindowCommandGlue) Run(w *backend.Window, args backend.Args) error {
+func (c *WindowCommandGlue) Run(w *backend.Window) error {
 	l := py.NewLock()
 	defer l.Unlock()
 
@@ -218,13 +226,13 @@ func (c *WindowCommandGlue) Run(w *backend.Window, args backend.Args) error {
 		pyw, pyargs, obj py.Object
 		err              error
 	)
-	log4go.Debug("WindowCommand: %v", args)
+	log4go.Debug("WindowCommand: %v", c.args)
 	if pyw, err = toPython(w); err != nil {
 		return pyError(err)
 	}
 	defer pyw.Decref()
 
-	if pyargs, err = c.CreatePyArgs(args); err != nil {
+	if pyargs, err = c.CreatePyArgs(c.args); err != nil {
 		return pyError(err)
 	}
 	defer pyargs.Decref()
@@ -249,7 +257,7 @@ func (c *WindowCommandGlue) Run(w *backend.Window, args backend.Args) error {
 	return nil
 }
 
-func (c *ApplicationCommandGlue) Run(args backend.Args) error {
+func (c *ApplicationCommandGlue) Run() error {
 	l := py.NewLock()
 	defer l.Unlock()
 
@@ -257,7 +265,7 @@ func (c *ApplicationCommandGlue) Run(args backend.Args) error {
 		pyargs py.Object
 		err    error
 	)
-	if pyargs, err = c.CreatePyArgs(args); err != nil {
+	if pyargs, err = c.CreatePyArgs(c.args); err != nil {
 		return pyError(err)
 	}
 	defer pyargs.Decref()
@@ -270,15 +278,15 @@ func (c *ApplicationCommandGlue) Run(args backend.Args) error {
 	// 	}
 	// }()
 
-	if obj, err := c.inner.Base().CallFunctionObjArgs(); err != nil {
+	obj, err := c.inner.Base().CallFunctionObjArgs()
+	if err != nil {
+		return pyError(err)
+	}
+	defer obj.Decref()
+	if ret, err := obj.Base().CallMethodObjArgs("run", pyargs); err != nil {
 		return pyError(err)
 	} else {
-		defer obj.Decref()
-		if ret, err := obj.Base().CallMethodObjArgs("run", pyargs); err != nil {
-			return pyError(err)
-		} else {
-			ret.Decref()
-		}
+		ret.Decref()
 	}
 	return nil
 }

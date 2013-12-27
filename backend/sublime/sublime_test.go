@@ -1,15 +1,19 @@
+// Copyright 2013 The lime Authors.
+// Use of this source code is governed by a 2-clause
+// BSD-style license that can be found in the LICENSE file.
+
 package sublime
 
 import (
 	"bytes"
 	"code.google.com/p/log4go"
 	"fmt"
-	"github.com/quarnster/completion/util"
 	"github.com/quarnster/util/text"
 	"io/ioutil"
 	"lime/3rdparty/libs/gopy/lib"
 	"lime/backend"
 	_ "lime/backend/commands"
+	"lime/backend/util"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,20 +47,6 @@ func TestSublime(t *testing.T) {
 		(w.(*Window)).data = &backend.Window{}
 		subl.AddObject("test_window", w)
 	}
-
-	og, err := py.Import("objgraph")
-	if err != nil {
-		log4go.Debug(err)
-		return
-	}
-	gr, err := og.Dict().GetItemString("show_growth")
-	if err != nil {
-		log4go.Debug(err)
-		return
-	}
-
-	log4go.Debug("Before")
-	gr.Base().CallFunctionObjArgs()
 
 	if dir, err := os.Open("testdata"); err != nil {
 		t.Error(err)
@@ -149,10 +139,6 @@ func TestSublime(t *testing.T) {
 			}
 		}
 	}
-	log4go.Debug("After")
-	l.Lock()
-	gr.Base().CallFunctionObjArgs()
-	l.Unlock()
 
 	var v *backend.View
 	for _, v2 := range w.Views() {
@@ -160,17 +146,4 @@ func TestSublime(t *testing.T) {
 			v = v2
 		}
 	}
-
-	// log4go.Debug("Before")
-	// gr.Base().CallFunctionObjArgs()
-	// for i := 0; i < 500; i++ {
-	// 	ed.CommandHandler().RunTextCommand(v, "set_motion", backend.Args{"motion": "vi_j"})
-	// }
-	// for i := 0; i < 500; i++ {
-	// 	ed.CommandHandler().RunTextCommand(v, "set_motion", backend.Args{"motion": "vi_k"})
-	// }
-
-	// log4go.Debug("After")
-	// gr.Base().CallFunctionObjArgs()
-
 }

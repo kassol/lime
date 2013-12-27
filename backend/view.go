@@ -1,3 +1,7 @@
+// Copyright 2013 The lime Authors.
+// Use of this source code is governed by a 2-clause
+// BSD-style license that can be found in the LICENSE file.
+
 package backend
 
 import (
@@ -20,6 +24,9 @@ import (
 )
 
 type (
+	// A View provides a view into a specific underlying buffer
+	// with its own set of selections, settings, viewport, etc.
+	// Multiple Views can share the same underlying data buffer.
 	View struct {
 		HasSettings
 		HasId
@@ -41,6 +48,10 @@ type (
 	parseReq struct {
 		forced bool
 	}
+
+	// The Edit object is an internal type passed as an argument
+	// to a TextCommand. All text operations need to be associated
+	// with a valid Edit object.
 	Edit struct {
 		invalid    bool
 		composite  CompositeAction
@@ -150,21 +161,37 @@ func (v *View) parsethread() {
 		sub := b.Substr(Region{0, b.Size()})
 		b.Unlock()
 		source, _ := v.Settings().Get("syntax", "").(string)
-		if len(source) != 0 {
-			// TODO
-			if pr, err := textmate.NewLanguageParser(source, sub); err != nil {
-				log4go.Error("Couldn't parse: %v", err)
-			} else if syn, err := parser.NewSyntaxHighlighter(pr); err != nil {
-				log4go.Error("Couldn't create syntaxhighlighter: %v", err)
-			} else {
-				v.lock.Lock()
-				defer v.lock.Unlock()
-				// Only set if it isn't invalid already, otherwise the
-				// current syntax highlighting will be more accurate
-				// as it will have had incremental adjustments done to it
-				if v.buffer.ChangeCount() == lastParse {
-					v.syntax = syn
-				}
+		if len(source) == 0 {
+			return
+		}
+		// TODO
+		pr, err := textmate.NewLanguageParser(source, sub)
+		if err != nil {
+			log4go.Error("Couldn't parse: %v", err)
+			return
+		}
+		syn, err := parser.NewSyntaxHighlighter(pr)
+		if err != nil {
+			log4go.Error("Couldn't create syntaxhighlighter: %v", err)
+			return
+		}
+		v.lock.Lock()
+		defer v.lock.Unlock()
+		// Only set if it isn't invalid already, otherwise the
+		// current syntax highlighting will be more accurate
+		// as it will have had incremental adjustments done to it
+		if v.buffer.ChangeCount() != lastParse {
+			return
+		}
+		v.syntax = syn
+		for k := range v.regions {
+			if strings.HasPrefix(k, "lime.syntax") {
+				delete(v.regions, k)
+			}
+		}
+		for k, v2 := range syn.Flatten() {
+			if v2.Regions.HasNonEmpty() {
+				v.regions[k] = v2
 			}
 		}
 	}
@@ -230,21 +257,21 @@ func (v *View) Insert(edit *Edit, point int, value string) int {
 		lines := strings.Split(value, "\n")
 		for i, li := range lines {
 			for {
-				if idx := strings.Index(li, "\t"); idx != -1 {
-					ai := idx
-					if i == 0 {
-						_, col := v.buffer.RowCol(point)
-						ai = col + 1
-					}
-					add := 1 + ((ai + (tab_size - 1)) &^ (tab_size - 1))
-					spaces := ""
-					for j := ai; j < add; j++ {
-						spaces += " "
-					}
-					li = li[:idx] + spaces + li[idx+1:]
-					continue
+				idx := strings.Index(li, "\t")
+				if idx == -1 {
+					break
 				}
-				break
+				ai := idx
+				if i == 0 {
+					_, col := v.buffer.RowCol(point)
+					ai = col + 1
+				}
+				add := 1 + ((ai + (tab_size - 1)) &^ (tab_size - 1))
+				spaces := ""
+				for j := ai; j < add; j++ {
+					spaces += " "
+				}
+				li = li[:idx] + spaces + li[idx+1:]
 			}
 			lines[i] = li
 		}
@@ -268,26 +295,26 @@ func (v *View) BeginEdit() *Edit {
 	return e
 }
 
-func (v *View) EndEdit(e *Edit) {
-	if e.invalid {
-		log4go.Fine("This edit has already been invalidated: %v, %v", e, v.editstack)
+func (v *View) EndEdit(edit *Edit) {
+	if edit.invalid {
+		log4go.Fine("This edit has already been invalidated: %v, %v", edit, v.editstack)
 		return
 	}
 	i := len(v.editstack) - 1
 	for i := len(v.editstack) - 1; i >= 0; i-- {
-		if v.editstack[i] == e {
+		if v.editstack[i] == edit {
 			break
 		}
 	}
 	if i == -1 {
-		log4go.Error("This edit isn't even in the stack... where did it come from? %v, %v", e, v.editstack)
+		log4go.Error("This edit isn't even in the stack... where did it come from? %v, %v", edit, v.editstack)
 		return
 	}
 
 	var selmod bool
 
 	if l := len(v.editstack) - 1; i != l {
-		log4go.Error("This edit wasn't last in the stack... %d !=  %d: %v, %v", i, l, e, v.editstack)
+		log4go.Error("This edit wasn't last in the stack... %d !=  %d: %v, %v", i, l, edit, v.editstack)
 	}
 	for j := len(v.editstack) - 1; j >= i; j-- {
 		ce := v.editstack[j]
@@ -298,14 +325,15 @@ func (v *View) EndEdit(e *Edit) {
 		if !eq && is {
 			selmod = true
 		}
-		if !v.scratch && !ce.bypassUndo && !eq {
-			if i == 0 || j != i {
-				// Presume someone forgot to add it in the j != i case
-				v.undoStack.Add(e)
-			} else {
-				// This edit belongs to another edit
-				v.editstack[i-1].composite.Add(ce)
-			}
+		if v.scratch || ce.bypassUndo || eq {
+			continue
+		}
+		if i == 0 || j != i {
+			// Presume someone forgot to add it in the j != i case
+			v.undoStack.Add(edit)
+		} else {
+			// This edit belongs to another edit
+			v.editstack[i-1].composite.Add(ce)
 		}
 	}
 	v.editstack = v.editstack[:i]
@@ -339,21 +367,21 @@ func (v *View) CommandHistory(idx int, modifying_only bool) (name string, args A
 	return "", nil, 0
 }
 
-func (v *View) runCommand(cmd TextCommand, name string, args Args) error {
+func (v *View) runCommand(cmd TextCommand, name string) error {
 	e := v.BeginEdit()
 	e.command = name
-	e.args = args
+	//	e.args = args
 	e.bypassUndo = cmd.BypassUndo()
 
 	defer func() {
 		v.EndEdit(e)
 		if r := recover(); r != nil {
-			log4go.Error("Paniced while running text command %s %v: %v\n%s", name, args, r, string(debug.Stack()))
+			log4go.Error("Paniced while running text command %s %v: %v\n%s", name, cmd, r, string(debug.Stack()))
 		}
 	}()
 	p := Prof.Enter("view.cmd." + name)
 	defer p.Exit()
-	return cmd.Run(v, e, args)
+	return cmd.Run(v, e)
 }
 
 func (v *View) AddRegions(key string, regions []Region, scope, icon string, flags render.ViewRegionFlags) {
@@ -383,4 +411,20 @@ func (v *View) EraseRegions(key string) {
 
 func (v *View) UndoStack() *UndoStack {
 	return &v.undoStack
+}
+
+func (v *View) Transform(scheme render.ColourScheme, viewport Region) render.Recipe {
+	v.lock.Lock()
+	defer v.lock.Unlock()
+	if v.syntax == nil {
+		return nil
+	}
+	rr := make(render.ViewRegionMap)
+	for k, v := range v.regions {
+		rr[k] = v.Clone()
+	}
+	rs := render.ViewRegions{Flags: render.SELECTION}
+	rs.Regions.AddAll(v.selection.Regions())
+	rr["lime.selection"] = rs
+	return render.Transform(scheme, rr, viewport)
 }

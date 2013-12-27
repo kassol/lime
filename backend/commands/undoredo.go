@@ -1,3 +1,7 @@
+// Copyright 2013 The lime Authors.
+// Use of this source code is governed by a 2-clause
+// BSD-style license that can be found in the LICENSE file.
+
 package commands
 
 import (
@@ -15,12 +19,12 @@ type (
 	}
 )
 
-func (c *UndoCommand) Run(v *backend.View, e *backend.Edit, args backend.Args) error {
+func (c *UndoCommand) Run(v *backend.View, e *backend.Edit) error {
 	v.UndoStack().Undo(c.hard)
 	return nil
 }
 
-func (c *RedoCommand) Run(v *backend.View, e *backend.Edit, args backend.Args) error {
+func (c *RedoCommand) Run(v *backend.View, e *backend.Edit) error {
 	v.UndoStack().Redo(c.hard)
 	return nil
 }
