@@ -389,7 +389,7 @@ func (t *tbfe) renderthread() {
 
 func (t *tbfe) loop() {
 	backend.OnNew.Add(func(v *backend.View) {
-		v.Settings().AddOnChange("lime.frontend.termbox.render", func() { t.render() })
+		v.Settings().AddOnChange("lime.frontend.termbox.render", func(name string) { t.render() })
 	})
 	backend.OnModified.Add(func(v *backend.View) {
 		t.render()
@@ -568,7 +568,7 @@ func (t *tbfe) loop() {
 				}
 				ed.HandleInput(kp)
 
-				blink = true
+				blink = false
 			}
 			if len(evchan) > 0 {
 				limit--
