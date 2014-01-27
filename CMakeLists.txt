@@ -184,7 +184,7 @@ else()
 endif()
 
 set(GOPKG ${GOPATH}/pkg/${GOOS}_${GOARCH})
-foreach(pkg code.google.com/p/log4go github.com/quarnster/parser github.com/quarnster/util/text)
+foreach(pkg code.google.com/p/log4go github.com/quarnster/parser github.com/quarnster/util/text github.com/howeyc/fsnotify)
 	add_custom_command(OUTPUT ${GOPKG}/${pkg}.a
 		COMMAND ${GOCMD} get ${pkg}
 		DEPENDS ${GOEXE} ${GODEPS}
@@ -222,6 +222,7 @@ add_peg(${CMAKE_SOURCE_DIR}/backend/loaders/plist/plist.peg "Spacing,KeyValuePai
 
 add_custom_command(OUTPUT ${CMAKE_SOURCE_DIR}/backend/sublime/region_generated.go
 	COMMAND ${GOCMD} run ${CMAKE_SOURCE_DIR}/tasks/build/gen_python_api.go
+	DEPENDS godep
 	DEPENDS ${PEGDEPENDS}
 	DEPENDS ${CMAKE_SOURCE_DIR}/tasks/build/gen_python_api.go
 	DEPENDS ${CMAKE_SOURCE_DIR}/backend/command.go
@@ -238,6 +239,10 @@ add_custom_target(fix
 	COMMAND ${GOCMD} run ${CMAKE_SOURCE_DIR}/tasks/build/fix.go
 	DEPENDS ${PEGDEPENDS}
 	DEPENDS ${CMAKE_SOURCE_DIR}/backend/sublime/region_generated.go
+)
+
+add_custom_target(godep
+	DEPENDS ${GOPATH}/pkg/${GOOS}_${GOARCH}/github.com/howeyc/fsnotify.a
 )
 
 add_custom_target(lime

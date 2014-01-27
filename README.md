@@ -1,4 +1,4 @@
-[![Build Status](https://travis-ci.org/limetext/lime.png?branch=master)](https://travis-ci.org/limetext/lime)
+[![Build Status](https://travis-ci.org/limetext/lime.png?branch=master)](https://travis-ci.org/limetext/lime) [![GoDoc](https://godoc.org/github.com/limetext/lime?status.png)](https://godoc.org/github.com/limetext/lime)
 
 # What is Lime?
 
@@ -12,7 +12,7 @@ As none of the other text editors I've tried come close to the love I had for Su
 
 The [frontend(s)](https://github.com/limetext/lime/issues?direction=desc&labels=frontend) are **not** ready to replace your favourite editor, but the backend itself I believe isn't too far away.
 
-Your help is needed to move the project forward! Claim an [issue](https://github.com/limetext/lime/issues) as your own and submit a pull request!
+[Your help is needed](https://github.com/limetext/lime#contributing) to move the project forward! Claim an [issue](https://github.com/limetext/lime/issues) as your own and submit a pull request!
 
 ![Screenshot taken Oct 23 2013](http://i.imgur.com/VIpmjau.png)
 
@@ -28,7 +28,25 @@ Please refer to the [Goals](https://github.com/limetext/lime/wiki/Goals) page in
 
 Please refer to the [Building](https://github.com/limetext/lime/wiki/Building) page in the [wiki](https://github.com/limetext/lime/wiki/_pages).
 
+
+# Contributing
+Want to hack on Lime? Awesome! Here are instructions to get you started. They are probably not perfect, please let us know if anything feels wrong or incomplete.
+
+We are always thrilled to receive pull requests, and do our best to process them as fast as possible. Not sure if that typo is worth a pull request? Do it! We will appreciate it.
+
+If your pull request is not accepted on the first try, don't be discouraged! If there's a problem with the implementation, hopefully you received feedback on what to improve.
+
+Where is a good place to start?
+We have created an "easy fix" label so you easily find easy issues to start with.
+
+https://github.com/limetext/lime/issues
+
+
+# Website and IRC channel
+Website: [limetext.org](http://limetext.org)
+
+IRC: [\#limetext](http://webchat.freenode.net/?channels=limetext)
+
 # License
 
 The license of the project is the [2-clause BSD license](https://github.com/limetext/lime/blob/master/LICENSE).
-
