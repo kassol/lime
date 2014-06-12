@@ -18,7 +18,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 )
 
 var re = regexp.MustCompile(`\p{Lu}`)
@@ -369,9 +371,9 @@ func generateWrapper(ptr reflect.Type, canCreate bool, ignorefunc func(name stri
 	return
 }
 
-const path = "../backend/sublime"
+const path = "./backend/sublime"
 
-var keep = regexp.MustCompile(`^(.+(_test|_manual)\.go|.+\.py)$`)
+var keep = regexp.MustCompile(`^(.+(_test|_manual)\.go|.+\.py)|(doc\.go)$`)
 
 func cleanup() {
 	f, err := os.Open(path)
@@ -401,13 +403,13 @@ func main() {
 		return sn
 	}
 	data := [][]string{
-		{"../backend/sublime/region_generated.go", generateWrapper(reflect.TypeOf(text.Region{}), true, regexp.MustCompile("Cut").MatchString)},
-		{"../backend/sublime/regionset_generated.go", generateWrapper(reflect.TypeOf(&text.RegionSet{}), false, regexp.MustCompile("Less|Swap|Adjust|Has|Cut").MatchString)},
-		{"../backend/sublime/edit_generated.go", generateWrapper(reflect.TypeOf(&backend.Edit{}), false, regexp.MustCompile("Apply|Undo").MatchString)},
-		{"../backend/sublime/view_generated.go", generateWrapper(reflect.TypeOf(&backend.View{}), false, regexp.MustCompile("Buffer|Syntax|CommandHistory|Show|AddRegions|UndoStack|Transform").MatchString)},
-		{"../backend/sublime/window_generated.go", generateWrapper(reflect.TypeOf(&backend.Window{}), false, regexp.MustCompile("OpenFile|SetActiveView").MatchString)},
-		{"../backend/sublime/settings_generated.go", generateWrapper(reflect.TypeOf(&text.Settings{}), false, regexp.MustCompile("Parent|Set|Get|UnmarshalJSON|MarshalJSON").MatchString)},
-		{"../backend/sublime/view_buffer_generated.go", generatemethodsEx(
+		{"./backend/sublime/region_generated.go", generateWrapper(reflect.TypeOf(text.Region{}), true, regexp.MustCompile("Cut").MatchString)},
+		{"./backend/sublime/regionset_generated.go", generateWrapper(reflect.TypeOf(&text.RegionSet{}), false, regexp.MustCompile("Less|Swap|Adjust|Has|Cut").MatchString)},
+		{"./backend/sublime/edit_generated.go", generateWrapper(reflect.TypeOf(&backend.Edit{}), false, regexp.MustCompile("Apply|Undo").MatchString)},
+		{"./backend/sublime/view_generated.go", generateWrapper(reflect.TypeOf(&backend.View{}), false, regexp.MustCompile("Buffer|Syntax|CommandHistory|Show|AddRegions|UndoStack|Transform|Save|Close").MatchString)},
+		{"./backend/sublime/window_generated.go", generateWrapper(reflect.TypeOf(&backend.Window{}), false, regexp.MustCompile("OpenFile|SetActiveView").MatchString)},
+		{"./backend/sublime/settings_generated.go", generateWrapper(reflect.TypeOf(&text.Settings{}), false, regexp.MustCompile("Parent|Set|Get|UnmarshalJSON|MarshalJSON").MatchString)},
+		{"./backend/sublime/view_buffer_generated.go", generatemethodsEx(
 			reflect.TypeOf(backend.GetEditor().Console().Buffer()),
 			regexp.MustCompile("Erase|Insert|Substr|SetFile|AddCallback|Data|Runes|Settings|Index|Close|Unlock|Lock").MatchString,
 			"o.data.Buffer().",
@@ -423,17 +425,17 @@ func main() {
 				}
 				return "(o *View) " + mn
 			})},
-		{"../backend/sublime/commands_generated.go", generatemethodsEx(reflect.TypeOf(backend.GetEditor().CommandHandler()),
+		{"./backend/sublime/commands_generated.go", generatemethodsEx(reflect.TypeOf(backend.GetEditor().CommandHandler()),
 			regexp.MustCompile("RunWindowCommand|RunTextCommand|RunApplicationCommand").MatchString,
 			"backend.GetEditor().CommandHandler().",
 			sn),
 		},
-		{"../backend/sublime/frontend_generated.go", generatemethodsEx(reflect.TypeOf(backend.GetEditor().Frontend()),
+		{"./backend/sublime/frontend_generated.go", generatemethodsEx(reflect.TypeOf(backend.GetEditor().Frontend()),
 			regexp.MustCompile("Show|VisibleRegion").MatchString,
 			"backend.GetEditor().Frontend().",
 			sn),
 		},
-		{"../backend/sublime/sublime_api_generated.go", generatemethodsEx(reflect.TypeOf(backend.GetEditor()),
+		{"./backend/sublime/sublime_api_generated.go", generatemethodsEx(reflect.TypeOf(backend.GetEditor()),
 			regexp.MustCompile("Info|HandleInput|CommandHandler|Windows|Frontend|Console|SetActiveWindow|Init|Watch|Watcher").MatchString,
 			"backend.GetEditor().",
 			sn),
@@ -442,17 +444,24 @@ func main() {
 	data[len(data)-1][1] += fmt.Sprintf(`var sublime_methods = []py.Method{
 		%s
 	}`, sublime_methods)
+	var year = strconv.FormatInt(int64(time.Now().Year()), 10)
+
 	for _, gen := range data {
 		if gen[0] == "" {
 			continue
 		}
-		wr := `// This file was generated as part of a build step and shouldn't be manually modified
+		wr := `// Copyright ` + year + ` The lime Authors.
+			// Use of this source code is governed by a 2-clause
+			// BSD-style license that can be found in the LICENSE file.
+
+			// This file was generated as part of a build step and shouldn't be manually modified
+
 			package sublime
 
 			import (
 				"fmt"
-				"lime/3rdparty/libs/gopy/lib"
-				"lime/backend"
+				"github.com/limetext/gopy/lib"
+				"github.com/limetext/lime/backend"
 				"github.com/quarnster/util/text"
 			)
 			var (

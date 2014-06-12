@@ -55,10 +55,10 @@ func (ve *ViewEvent) Add(cb ViewEventCallback) {
 }
 
 // Trigger this ViewEvent by calling all the registered callbacks in order of registration.
-func (ve ViewEvent) Call(v *View) {
-	log4go.Finest("ViewEvent")
-	for i := range ve {
-		ve[i](v)
+func (ve *ViewEvent) Call(v *View) {
+	log4go.Finest("%s(%v)", evNames[ve], v.Id())
+	for _, ev := range *ve {
+		ev(v)
 	}
 }
 
@@ -89,10 +89,10 @@ func (we *WindowEvent) Add(cb WindowEventCallback) {
 }
 
 // Trigger this WindowEvent by calling all the registered callbacks in order of registration.
-func (we WindowEvent) Call(w *Window) {
-	log4go.Finest("WindowEvent")
-	for i := range we {
-		we[i](w)
+func (we *WindowEvent) Call(w *Window) {
+	log4go.Finest("%s(%v)", wevNames[we], w.Id())
+	for _, ev := range *we {
+		ev(w)
 	}
 }
 
@@ -101,6 +101,7 @@ var (
 	OnLoad              ViewEvent //< Called when loading a view's buffer has finished
 	OnActivated         ViewEvent //< Called when a view gains input focus.
 	OnDeactivated       ViewEvent //< Called when a view loses input focus.
+	OnPreClose          ViewEvent //< Called when a view is about to be closed.
 	OnClose             ViewEvent //< Called when a view has been closed.
 	OnPreSave           ViewEvent //< Called just before a view's buffer is saved.
 	OnPostSave          ViewEvent //< Called after a view's buffer has been saved.
@@ -109,6 +110,24 @@ var (
 
 	OnNewWindow    WindowEvent       //< Called when a new window has been created.
 	OnQueryContext QueryContextEvent //< Called when context is being queried.
+)
+
+var (
+	evNames = map[*ViewEvent]string{
+		&OnNew:               "OnNew",
+		&OnLoad:              "OnLoad",
+		&OnActivated:         "OnActivated",
+		&OnDeactivated:       "OnDeactivated",
+		&OnPreClose:          "OnPreClose",
+		&OnClose:             "OnClose",
+		&OnPreSave:           "OnPreSave",
+		&OnPostSave:          "OnPostSave",
+		&OnModified:          "OnModified",
+		&OnSelectionModified: "OnSelectionModified",
+	}
+	wevNames = map[*WindowEvent]string{
+		&OnNewWindow: "OnNewWindow",
+	}
 )
 
 func init() {

@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"code.google.com/p/log4go"
 	"fmt"
+	"github.com/howeyc/fsnotify"
 	"github.com/limetext/gopy/lib"
 	"github.com/limetext/lime/backend"
 	_ "github.com/limetext/lime/backend/commands"
@@ -15,11 +16,12 @@ import (
 	"github.com/limetext/lime/backend/sublime"
 	"github.com/limetext/lime/backend/textmate"
 	"github.com/limetext/lime/backend/util"
-	"github.com/niemeyer/qml"
 	. "github.com/quarnster/util/text"
+	"gopkg.in/qml.v0"
 	"image/color"
 	"io"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -228,75 +230,100 @@ const (
 )
 
 type (
-	tbfe struct {
+	// keeping track of frontend state
+	qmlfrontend struct {
 		status_message string
 		lock           sync.Mutex
 		windows        map[*backend.Window]*frontendWindow
 		Console        *frontendView
 		qmlDispatch    chan qmlDispatch
 	}
+	// Used for batching qml.Changed calls
+	qmlDispatch struct{ value, field interface{} }
+
+	// This allows us to trigger a qml.Changed on a specific
+	// line in the view so that only it is
+	// re-rendered by qml
 	lineStruct struct {
 		Text string
 	}
+	// A helper glue structure connecting the backend Window with
+	// the qml.Window
 	frontendWindow struct {
 		bw     *backend.Window
 		Len    int
 		views  []*frontendView
 		window *qml.Window
 	}
-	qmlDispatch  struct{ value, field interface{} }
+
+	// A helper glue structure connecting the backend View
+	// with the qml code that then ends up rendering it.
 	frontendView struct {
 		bv            *backend.View
 		Len           int
 		FormattedLine []*lineStruct
+		Title         lineStruct
 	}
 )
 
 var (
-	t *tbfe
+	t *qmlfrontend
 )
 
 func htmlcol(c render.Colour) string {
 	return fmt.Sprintf("%02X%02X%02X", c.R, c.G, c.B)
 }
 
+func (fw *frontendWindow) launch(wg *sync.WaitGroup, component qml.Object) {
+	wg.Add(1)
+	fw.window = component.CreateWindow(nil)
+	fw.window.Show()
+	fw.window.Set("myWindow", fw)
+
+	go func() {
+		fw.window.Wait()
+		wg.Done()
+	}()
+}
+
 func (fw *frontendWindow) View(idx int) *frontendView {
 	return fw.views[idx]
 }
-func (t *tbfe) Window(w *backend.Window) *frontendWindow {
+func (t *qmlfrontend) Window(w *backend.Window) *frontendWindow {
 	return t.windows[w]
 }
 
-func (t *tbfe) Show(v *backend.View, r Region) {
+func (t *qmlfrontend) Show(v *backend.View, r Region) {
 	// TODO
 }
 
-func (t *tbfe) VisibleRegion(v *backend.View) Region {
+func (t *qmlfrontend) VisibleRegion(v *backend.View) Region {
 	// TODO
 	return Region{0, v.Buffer().Size()}
 }
 
-func (t *tbfe) StatusMessage(msg string) {
+func (t *qmlfrontend) StatusMessage(msg string) {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 	t.status_message = msg
 }
 
-func (t *tbfe) ErrorMessage(msg string) {
+func (t *qmlfrontend) ErrorMessage(msg string) {
 	log4go.Error(msg)
 }
 
 // TODO(q): Actually show a dialog
-func (t *tbfe) MessageDialog(msg string) {
+func (t *qmlfrontend) MessageDialog(msg string) {
 	log4go.Info(msg)
 }
 
 // TODO(q): Actually show a dialog
-func (t *tbfe) OkCancelDialog(msg, ok string) {
+func (t *qmlfrontend) OkCancelDialog(msg, ok string) bool {
 	log4go.Info(msg, ok)
+	return false
 }
 
-func (t *tbfe) scroll(b Buffer, pos, delta int) {
+func (t *qmlfrontend) scroll(b Buffer, pos, delta int) {
 	t.Show(backend.GetEditor().Console(), Region{b.Size(), b.Size()})
 }
 
@@ -304,8 +331,8 @@ func (fv *frontendView) Line(index int) *lineStruct {
 	return fv.FormattedLine[index]
 }
 
-func (fv *frontendView) Title() string {
-	return fv.bv.Buffer().FileName()
+func (fv *frontendView) Setting(name string) interface{} {
+	return fv.Back().Settings().Get(name, nil)
 }
 
 func (fv *frontendView) Back() *backend.View {
@@ -318,7 +345,7 @@ func (fw *frontendWindow) Back() *backend.Window {
 // Apparently calling qml.Changed also triggers a re-draw, meaning that typed text is at the
 // mercy of how quick Qt happens to be rendering.
 // Try setting batching_enabled = false to see the effects of non-batching
-func (t *tbfe) qmlBatchLoop() {
+func (t *qmlfrontend) qmlBatchLoop() {
 	queue := make(map[qmlDispatch]bool)
 	t.qmlDispatch = make(chan qmlDispatch, 1000)
 	for {
@@ -339,9 +366,9 @@ func (t *tbfe) qmlBatchLoop() {
 	}
 }
 
-const batching_enabled = false
+const batching_enabled = true
 
-func (t *tbfe) qmlChanged(value, field interface{}) {
+func (t *qmlfrontend) qmlChanged(value, field interface{}) {
 	if !batching_enabled {
 		qml.Changed(value, field)
 	} else {
@@ -407,25 +434,23 @@ func (fv *frontendView) formatLine(line int) {
 	}
 }
 
-func (t *tbfe) DefaultBg() color.RGBA {
+func (fv *frontendView) AddR(a int, b int) {
+	fv.bv.Sel().Add(Region{a, b})
+}
+
+func (t *qmlfrontend) DefaultBg() color.RGBA {
 	c := scheme.Spice(&render.ViewRegions{})
 	c.Background.A = 0xff
 	return color.RGBA(c.Background)
 }
 
-func (t *tbfe) DefaultFg() color.RGBA {
+func (t *qmlfrontend) DefaultFg() color.RGBA {
 	c := scheme.Spice(&render.ViewRegions{})
 	c.Foreground.A = 0xff
 	return color.RGBA(c.Foreground)
 }
 
-func (t *tbfe) loop() {
-	qml.Init(nil)
-	engine := qml.NewEngine()
-
-	engine.Context().SetVar("lines", t)
-	engine.Context().SetVar("frontend", t)
-	engine.Context().SetVar("editor", backend.GetEditor())
+func (t *qmlfrontend) loop() (err error) {
 
 	backend.OnNew.Add(func(v *backend.View) {
 		fv := &frontendView{bv: v}
@@ -439,10 +464,28 @@ func (t *tbfe) loop() {
 			}
 		})
 
+		fv.Title.Text = v.Buffer().FileName()
+		if len(fv.Title.Text) == 0 {
+			fv.Title.Text = "untitled"
+		}
+
 		w2 := t.windows[v.Window()]
 		w2.views = append(w2.views, fv)
 		w2.Len = len(w2.views)
 		t.qmlChanged(w2, &w2.Len)
+	})
+
+	backend.OnLoad.Add(func(v *backend.View) {
+		w2 := t.windows[v.Window()]
+		i := 0
+		for i, _ = range w2.views {
+			if w2.views[i].bv == v {
+				break
+			}
+		}
+		v2 := w2.views[i]
+		v2.Title.Text = v.Buffer().FileName()
+		t.qmlChanged(v2, &v2.Title)
 	})
 
 	ed := backend.GetEditor()
@@ -454,27 +497,52 @@ func (t *tbfe) loop() {
 	c.Buffer().AddCallback(t.Console.bufferChanged)
 	c.Buffer().AddCallback(t.scroll)
 
-	component, err := engine.LoadFile("main.qml")
-	if err != nil {
-		log4go.Exit(err)
+	const qmlMainFile = "main.qml"
+	var (
+		engine    *qml.Engine
+		component qml.Object
+		// WaitGroup keeping track of open windows
+		wg sync.WaitGroup
+	)
+
+	// create and setup a new engine, destroying
+	// the old one if one exists.
+	//
+	// This is needed to re-load qml files to get
+	// the new file contents from disc as otherwise
+	// the old file would still be what is referenced.
+	newEngine := func() (err error) {
+		if engine != nil {
+			log4go.Debug("calling destroy")
+			// TODO(.): calling this appears to make the editor *very* crash-prone, just let it leak for now
+			// engine.Destroy()
+			engine = nil
+		}
+		log4go.Debug("calling newEngine")
+		engine = qml.NewEngine()
+		log4go.Debug("setvar frontend")
+		engine.Context().SetVar("frontend", t)
+		log4go.Debug("setvar editor")
+		engine.Context().SetVar("editor", backend.GetEditor())
+
+		log4go.Debug("loadfile")
+		component, err = engine.LoadFile(qmlMainFile)
+		return
+	}
+	if err := newEngine(); err != nil {
+		log4go.Error(err)
 	}
 
-	wg := sync.WaitGroup{}
 	backend.OnNewWindow.Add(func(w *backend.Window) {
-		wg.Add(1)
-		fw := &frontendWindow{bw: w, window: component.CreateWindow(nil)}
+		fw := &frontendWindow{bw: w}
 		t.windows[w] = fw
-		fw.window.Show()
-		fw.window.Set("myWindow", fw)
-
-		go func() {
-			fw.window.Wait()
-			wg.Done()
-		}()
+		if component != nil {
+			fw.launch(&wg, component)
+		}
 	})
 
 	// TODO: should be done backend side
-	if sc, err := textmate.LoadTheme("../../3rdparty/bundles/TextMate-Themes/GlitterBomb.tmTheme"); err != nil {
+	if sc, err := textmate.LoadTheme("../../3rdparty/bundles/TextMate-Themes/Monokai.tmTheme"); err != nil {
 		log4go.Error(err)
 	} else {
 		scheme = sc
@@ -488,17 +556,94 @@ func (t *tbfe) loop() {
 	v := w.OpenFile("main.go", 0)
 	// TODO: should be done backend side
 	v.Settings().Set("syntax", "../../3rdparty/bundles/go.tmbundle/Syntaxes/Go.tmLanguage")
+	v.Sel().Clear()
+	v.Sel().Add(Region{0, 0})
 	v = w.OpenFile("../../backend/editor.go", 0)
 	// TODO: should be done backend side
 	v.Settings().Set("syntax", "../../3rdparty/bundles/go.tmbundle/Syntaxes/Go.tmLanguage")
+	v.Sel().Clear()
+	v.Sel().Add(Region{0, 0})
 
 	ed.Init()
 	sublime.Init()
-	wg.Wait()
+
+	watch, err := fsnotify.NewWatcher()
+	if err != nil {
+		log4go.Error("Unable to create file watcher: %s", err)
+		return
+	}
+	defer watch.Close()
+	watch.Watch(".")
+	defer watch.RemoveWatch(".")
+
+	reloadRequested := false
+
+	go func() {
+		for {
+			select {
+			case ev := <-watch.Event:
+				if ev != nil && strings.HasSuffix(ev.Name, ".qml") && ev.IsModify() && !ev.IsAttrib() {
+					reloadRequested = true
+					// Close all open windows to de-reference all
+					// qml objects
+					for _, v := range t.windows {
+						if v.window != nil {
+							v.window.Hide()
+							v.window.Destroy()
+							v.window = nil
+						}
+					}
+				}
+			}
+		}
+	}()
+
+	for {
+		// Reset reload status
+		reloadRequested = false
+
+		log4go.Debug("Waiting for all windows to close")
+		// wg would be the WaitGroup all windows belong to, so first we wait for
+		// all windows to close.
+		wg.Wait()
+		log4go.Debug("All windows closed. reloadRequest: %v", reloadRequested)
+		// then we check if there's a reload request in the pipe
+		if !reloadRequested || len(t.windows) == 0 {
+			// This would be a genuine exit; all windows closed by the user
+			break
+		}
+
+		// *We* closed all windows because we want to reload freshly changed qml
+		// files.
+		for {
+			log4go.Debug("Calling newEngine")
+			if err := newEngine(); err != nil {
+				// Reset reload status
+				reloadRequested = false
+				log4go.Error(err)
+				for !reloadRequested {
+					// This loop allows us to re-try reloading
+					// if there was an error in the file this time,
+					// we just loop around again when we receive the next
+					// reload request (ie on the next save of the file).
+					time.Sleep(time.Second)
+				}
+				continue
+			}
+			log4go.Debug("break")
+			break
+		}
+		log4go.Debug("re-launching all windows")
+		// Succeeded loading the file, re-launch all windows
+		for _, v := range t.windows {
+			v.launch(&wg, component)
+		}
+	}
+	return
 }
 
-func (t *tbfe) HandleInput(keycode int, modifiers int) bool {
-	log4go.Debug("tbfe.HandleInput: key=%x, modifiers=%x", keycode, modifiers)
+func (t *qmlfrontend) HandleInput(keycode int, modifiers int) bool {
+	log4go.Debug("qmlfrontend.HandleInput: key=%x, modifiers=%x", keycode, modifiers)
 	shift := false
 	alt := false
 	ctrl := false
@@ -541,7 +686,10 @@ func main() {
 		py.Finalize()
 	}()
 
-	t = &tbfe{windows: make(map[*backend.Window]*frontendWindow)}
+	t = &qmlfrontend{windows: make(map[*backend.Window]*frontendWindow)}
 	go t.qmlBatchLoop()
+	qml.Init(nil)
 	t.loop()
+	//TODO: for qml.v1
+	//	qml.Run(nil, t.loop)
 }

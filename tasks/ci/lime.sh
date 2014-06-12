@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 
+# Just so that our oniguruma.pc is found if
+# the user doesn't have an oniguruma.pc.
+export PKG_CONFIG_PATH=$PKG_CONFIG_PATH:$PWD/../rubex
+
 # Colors.
 RED="\e[31m"
 GREEN="\e[32m"
@@ -30,6 +34,22 @@ function do_test {
 	fi
 }
 
+# Just to fetch all dependencies needed
+# Do *not* add "-u", or pull requests will not actually be built,
+# instead it'll checkout master
+fold_start "bootstrap"
+go get -d github.com/limetext/lime/frontend/termbox
+fold_end "bootstrap"
+
+fold_start "Gen Python"
+go run tasks/build/gen_python_api.go
+fold_end "Gen Python"
+
+fold_start "Add License"
+go run tasks/build/fix.go
+fold_end "Add License"
+
+# Actual build now that the python api has been refreshed
 fold_start "termbox"
 go get github.com/limetext/lime/frontend/termbox
 fold_end "termbox"

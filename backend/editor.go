@@ -11,7 +11,6 @@ import (
 	"github.com/limetext/lime/backend/loaders"
 	. "github.com/limetext/lime/backend/util"
 	. "github.com/quarnster/util/text"
-	"io/ioutil"
 	"runtime"
 	"runtime/debug"
 	"sync"
@@ -35,30 +34,60 @@ type (
 		clipboard     string
 		keyInput      chan (KeyPress)
 		watcher       *fsnotify.Watcher
-		watchedFiles  map[string]WatchedFile
+		watchedFiles  map[string]Watched
 	}
+
+	// The Frontend interface defines the API
+	// for functionality that that is frontend specific.
 	Frontend interface {
+		// Probe the frontend for the currently
+		// visible region of the given view.
 		VisibleRegion(v *View) Region
+
+		// Make the frontend show the specified region of the
+		// given view.
 		Show(v *View, r Region)
+
+		// Sets the status message shown in the status bar
 		StatusMessage(string)
+
+		// Displays an error message to the usser
 		ErrorMessage(string)
+
+		// Displays a message dialog to the user
 		MessageDialog(string)
-		OkCancelDialog(msg string, okname string)
+
+		// Displays an ok / cancel dialog to the user.
+		// "okname" if provided will be used as the text
+		// instead of "Ok" for the ok button.
+		// Returns true when ok was pressed, and false when
+		// cancel was pressed.
+		OkCancelDialog(msg string, okname string) bool
 	}
 	myLogWriter struct {
 		log chan string
 	}
-	DummyFrontend struct{}
+	DummyFrontend struct {
+		// Default return value for OkCancelDialog
+		DefaultAction bool
+	}
 )
 
-const DEFAULT_SUBLIME_SETTINGS_PATH = "../../backend/packages/Default/Default.sublime-settings"
+const (
+	LIME_USER_PACKAGES_PATH = "../../3rdparty/bundles/"
+	LIME_USER_PACKETS_PATH  = "../../3rdparty/bundles/User/"
+	LIME_DEFAULTS_PATH      = "../../backend/packages/Default/"
+)
 
-func (h *DummyFrontend) StatusMessage(msg string)      {}
-func (h *DummyFrontend) ErrorMessage(msg string)       {}
-func (h *DummyFrontend) MessageDialog(msg string)      {}
-func (h *DummyFrontend) OkCancelDialog(string, string) {}
-func (h *DummyFrontend) Show(v *View, r Region)        {}
-func (h *DummyFrontend) VisibleRegion(v *View) Region  { return Region{} }
+func (h *DummyFrontend) StatusMessage(msg string) { log4go.Info(msg) }
+func (h *DummyFrontend) ErrorMessage(msg string)  { log4go.Error(msg) }
+func (h *DummyFrontend) MessageDialog(msg string) { log4go.Info(msg) }
+func (h *DummyFrontend) OkCancelDialog(msg string, button string) bool {
+	log4go.Info(msg)
+	return h.DefaultAction
+}
+func (h *DummyFrontend) Show(v *View, r Region)       {}
+func (h *DummyFrontend) VisibleRegion(v *View) Region { return Region{} }
 
 func newMyLogWriter() *myLogWriter {
 	ret := &myLogWriter{make(chan string, 100)}
@@ -111,7 +140,7 @@ func GetEditor() *Editor {
 			},
 			keyInput:     make(chan KeyPress, 32),
 			watcher:      newWatcher(),
-			watchedFiles: make(map[string]WatchedFile),
+			watchedFiles: make(map[string]Watched),
 		}
 		ed.console.Settings().Set("is_widget", true)
 		ed.Settings() // Just to initialize it
@@ -136,40 +165,36 @@ func (e *Editor) Init() {
 	ed.loadSettings()
 }
 
-func (e *Editor) loadKeybinding(fn string) {
-	d, err := ioutil.ReadFile(fn)
-	if err != nil {
-		log4go.Error("Couldn't load file %s: %s", fn, err)
-	}
+func (e *Editor) loadKeybinding(pkg *packet) {
 	var bindings KeyBindings
-	if err := loaders.LoadJSON(d, &bindings); err != nil {
+	if err := loaders.LoadJSON(pkg.Get().([]byte), &bindings); err != nil {
 		log4go.Error(err)
 	} else {
-		log4go.Info("Loaded %s", fn)
+		log4go.Info("Loaded %s", pkg.Name())
+		e.Watch(NewWatchedPackage(pkg))
 	}
 	e.keyBindings.merge(&bindings)
 }
 
 func (e *Editor) loadKeybindings() {
-	// TODO(q): should search for keybindings
-	e.loadKeybinding("../../backend/packages/Default/Default.sublime-keymap")
-	e.loadKeybinding("../../3rdparty/bundles/Vintageous/Default.sublime-keymap")
+	for _, p := range packets.filter("keymap") {
+		e.loadKeybinding(p)
+	}
 }
 
-func (e *Editor) loadSetting(path string) {
-	d, err := ioutil.ReadFile(path)
-	if err != nil {
-		log4go.Error("Couldn't load file %s: %s", path, err)
-	}
-	if err := loaders.LoadJSON(d, e.Settings()); err != nil {
+func (e *Editor) loadSetting(pkg *packet) {
+	if err := loaders.LoadJSON(pkg.Get().([]byte), e.Settings()); err != nil {
 		log4go.Error(err)
 	} else {
-		log4go.Info("Loaded %s", path)
+		log4go.Info("Loaded %s", pkg.Name())
+		e.Watch(NewWatchedPackage(pkg))
 	}
 }
 
 func (e *Editor) loadSettings() {
-	e.loadSetting(DEFAULT_SUBLIME_SETTINGS_PATH)
+	for _, p := range packets.filter("setting") {
+		e.loadSetting(p)
+	}
 }
 
 func (e *Editor) PackagesPath() string {
@@ -320,12 +345,21 @@ func (e *Editor) GetClipboard() string {
 	return e.clipboard
 }
 
-func (e *Editor) Watch(file WatchedFile) {
+func (e *Editor) Watch(file Watched) {
+	log4go.Finest("Watch(%v)", file)
 	if err := e.watcher.Watch(file.Name()); err != nil {
-		log4go.Error("Could not watch file: ", file.Name())
+		log4go.Error("Could not watch file: %v", err)
 	} else {
 		e.watchedFiles[file.Name()] = file
 	}
+}
+
+func (e *Editor) UnWatch(name string) {
+	if err := e.watcher.RemoveWatch(name); err != nil {
+		log4go.Error("Couldn't unwatch file: %v", err)
+	}
+	log4go.Finest("UnWatch(%s)", name)
+	delete(e.watchedFiles, name)
 }
 
 func (e *Editor) observeFiles() {
@@ -333,7 +367,9 @@ func (e *Editor) observeFiles() {
 		select {
 		case ev := <-e.watcher.Event:
 			if ev.IsModify() {
-				e.watchedFiles[ev.Name].Reload()
+				if f, exist := e.watchedFiles[ev.Name]; exist {
+					f.Reload()
+				}
 			}
 		case err := <-e.watcher.Error:
 			log4go.Error("error:", err)

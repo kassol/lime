@@ -9,3 +9,4 @@ install:
 
 script:
   - ./tasks/ci/lime.sh
+  - ./tasks/ci/gofmt.sh

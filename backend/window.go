@@ -40,9 +40,25 @@ func (w *Window) NewFile() *View {
 func (w *Window) Views() []*View {
 	w.lock.Lock()
 	defer w.lock.Unlock()
-	ret := make([]*View, 0, len(w.views))
+	ret := make([]*View, len(w.views))
 	copy(ret, w.views)
 	return ret
+}
+
+func (w *Window) remove(v *View) {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	for i, vv := range w.views {
+		if v == vv {
+			end := len(w.views) - 1
+			if i != end {
+				copy(w.views[i:], w.views[i+1:])
+			}
+			w.views = w.views[:end]
+			return
+		}
+	}
+	log4go.Error("Wanted to remove view %+v, but it doesn't appear to be a child of this window", v)
 }
 
 func (w *Window) OpenFile(filename string, flags int) *View {

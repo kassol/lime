@@ -9,6 +9,9 @@ ApplicationWindow {
     id: window
     width: 800
     height: 600
+
+    property var myWindow
+
     menuBar: MenuBar {
         id: menu
         Menu {
@@ -25,7 +28,58 @@ ApplicationWindow {
             }
         }
     }
-    property var myWindow
+
+    statusBar: StatusBar {
+        id: statusBar
+        style: StatusBarStyle {
+            background: Image {
+               source: "../../3rdparty/bundles/themes/soda/Soda Dark/status-bar-background.png"
+            }
+        }
+
+        property color textColor: "#969696"
+
+        RowLayout {
+            anchors.fill: parent
+            id: statusBarRowLayout
+            spacing: 15
+
+            RowLayout {
+                anchors.fill: parent
+                spacing: 3
+
+                Label {
+                    text: "git branch: master"
+                    color: statusBar.textColor
+                }
+
+                Label {
+                    text: "INSERT MODE"
+                    color: statusBar.textColor
+                }
+
+                Label {
+                    id: statusBarCaretPos
+                    text: "Line xx, Column yy"
+                    color: statusBar.textColor
+                }
+            }
+
+            Label {
+                id: statusBarIndent
+                text: "Tab Size/Spaces: 4"
+                color: statusBar.textColor
+                Layout.alignment: Qt.AlignRight
+            }
+
+            Label {
+                id: statusBarLanguage
+                text: "Go"
+                color: statusBar.textColor
+                Layout.alignment: Qt.AlignRight
+            }
+        }
+    }
 
     Item {
         anchors.fill: parent
@@ -47,6 +101,13 @@ ApplicationWindow {
                         tab: Item {
                             implicitWidth: 180
                             implicitHeight: 28
+                             ToolTip {
+                                id: tooltip
+                                backgroundColor: "#BECCCC66"
+                                textColor: "black"
+                                font.pointSize: 8
+                                text: styleData.title
+                            }
                             BorderImage {
                                 source: styleData.selected ? "../../3rdparty/bundles/themes/soda/Soda Dark/tab-active.png" : "../../3rdparty/bundles/themes/soda/Soda Dark/tab-inactive.png"
                                 border { left: 5; top: 5; right: 5; bottom: 5 }
@@ -55,7 +116,7 @@ ApplicationWindow {
                                 Text {
                                     id: tab_title
                                     anchors.centerIn: parent
-                                    text: styleData.title
+                                    text: styleData.title.replace(/^.*[\\\/]/, '')
                                     color: frontend.defaultFg()
                                     anchors.verticalCenterOffset: 1
                                 }
@@ -78,15 +139,37 @@ ApplicationWindow {
                         }
                         model: tmp()
                         delegate: Tab {
-                            title: myWindow.view(index).title()
-                            LimeView { myView: myWindow.view(index) }
+                            title: myWindow.view(index).title.text
+                            LimeView {
+                                id: view
+                                myView: myWindow.view(index)
+                                Timer {
+                                    // TODO(.): Why is view null sometimes?
+                                    //          Is it just a variant of https://github.com/go-qml/qml/issues/68?
+                                    interval: 100
+                                    running: view.myView == null
+                                    repeat: true
+                                    onTriggered: {
+                                        view.myView = myWindow.view(index);
+                                        if (index == tabs.currentIndex) {
+                                            tabs.resetminimap();
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
-
-                    onCurrentIndexChanged: {
+                    function resetminimap() {
                         myWindow.back().setActiveView(myWindow.view(currentIndex).back());
+
                         minimap.myView = myWindow.view(currentIndex);
                         minimap.realView = tabs.getTab(currentIndex).item.children[1];
+                    }
+                    Component.onCompleted: {
+                        resetminimap();
+                    }
+                    onCurrentIndexChanged: {
+                        resetminimap();
                     }
                 }
                 LimeView {
@@ -95,6 +178,7 @@ ApplicationWindow {
                     Layout.preferredWidth: 100
                     width: 100
                     isMinimap: true
+                    cursor: Qt.ArrowCursor
                     property var realView
                     property var oldView
 
@@ -115,7 +199,7 @@ ApplicationWindow {
                         id: minimapArea
                         y: parent.percentage(parent.children[1])*(parent.height-height)
                         width: parent.width
-                        height: parent.realView.visibleArea.heightRatio*parent.children[1].contentHeight
+                        height: parent.realView ? parent.realView.visibleArea.heightRatio*parent.children[1].contentHeight : parent.height
                         color: "white"
                         opacity: 0.1
                     }
@@ -124,6 +208,17 @@ ApplicationWindow {
             LimeView {
                 id: consoleView
                 myView: frontend.console
+                Timer {
+                    // TODO(.): Why is view null sometimes?
+                    //          Is it just a variant of https://github.com/go-qml/qml/issues/68?
+                    interval: 100
+                    running: consoleView.myView == null
+                    repeat: true
+                    onTriggered: {
+                        consoleView.myView = myWindow.view(index);
+                    }
+                }
+
                 height: 100
             }
         }

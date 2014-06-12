@@ -6,12 +6,13 @@ package backend
 
 import (
 	"code.google.com/p/log4go"
+	"fmt"
 	. "github.com/quarnster/util/text"
 	"io/ioutil"
 )
 
 type (
-	WatchedFile interface {
+	Watched interface {
 		Name() string
 		Reload()
 	}
@@ -19,10 +20,18 @@ type (
 	WatchedUserFile struct {
 		view *View
 	}
+
+	WatchedPackage struct {
+		pkg Package
+	}
 )
 
 func NewWatchedUserFile(view *View) *WatchedUserFile {
 	return &WatchedUserFile{view}
+}
+
+func (o WatchedUserFile) String() string {
+	return fmt.Sprintf("%s (%d)", o.Name(), o.view.Id())
 }
 
 func (o *WatchedUserFile) Name() string {
@@ -30,8 +39,18 @@ func (o *WatchedUserFile) Name() string {
 }
 
 func (o *WatchedUserFile) Reload() {
+	log4go.Finest("\"%v\".Reload()", o)
+
 	view := o.view
 	filename := o.Name()
+
+	if saving, ok := view.Settings().Get("lime.saving", false).(bool); ok && saving {
+		// This reload was triggered by ourselves saving to this file, so don't reload it
+		return
+	}
+	if !GetEditor().Frontend().OkCancelDialog("File was changed by another program, reload?", "reload") {
+		return
+	}
 
 	if d, err := ioutil.ReadFile(filename); err != nil {
 		log4go.Error("Could not read file: %s\n. Error was: %v", filename, err)
@@ -41,4 +60,20 @@ func (o *WatchedUserFile) Reload() {
 		view.Replace(edit, Region{0, end}, string(d))
 		view.EndEdit(edit)
 	}
+}
+
+func NewWatchedPackage(pkg Package) *WatchedPackage {
+	return &WatchedPackage{pkg}
+}
+
+func (o *WatchedPackage) Name() string {
+	return o.pkg.Name()
+}
+
+func (o *WatchedPackage) Reload() {
+	o.pkg.Reload()
+}
+
+func (o *WatchedPackage) Package() Package {
+	return o.pkg
 }
