@@ -9,7 +9,6 @@ import (
 	"fmt"
 	. "github.com/limetext/lime/backend/util"
 	"reflect"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -17,6 +16,7 @@ import (
 type (
 	CommandHandler interface {
 		Unregister(string) error
+		RegisterWithDefault(cmd interface{}) error
 		Register(name string, cmd interface{}) error
 		// TODO(q): Do the commands need to be split in separate lists?
 		RunWindowCommand(*Window, string, Args) error
@@ -24,9 +24,9 @@ type (
 		RunApplicationCommand(string, Args) error
 	}
 
-	appcmd         map[string]interface{}
-	textcmd        map[string]interface{}
-	wndcmd         map[string]interface{}
+	appcmd         map[string]Command
+	textcmd        map[string]Command
+	wndcmd         map[string]Command
 	commandHandler struct {
 		ApplicationCommands appcmd
 		TextCommands        textcmd
@@ -36,22 +36,13 @@ type (
 	}
 )
 
-var casere = regexp.MustCompile(`([A-Z])`)
-
-func PascalCaseToSnakeCase(in string) string {
-	first := true
-	return casere.ReplaceAllStringFunc(in, func(in string) string {
-		if first {
-			first = false
-			return strings.ToLower(in)
-		}
-		return "_" + strings.ToLower(in)
-	})
-
+func DefaultName(cmd interface{}) string {
+	name := reflect.TypeOf(cmd).Elem().Name()
+	return PascalCaseToSnakeCase(strings.TrimSuffix(name, "Command"))
 }
 
 // If the cmd implements the CustomInit interface, its Init function
-// is called, otherwise the fields of th cmd's underlying struct type
+// is called, otherwise the fields of the cmd's underlying struct type
 // will be enumerated and match against the dictionary keys in args,
 // or if the key isn't provided in args, the Zero value will be used.
 func (ch *commandHandler) init(cmd interface{}, args Args) error {
@@ -161,14 +152,18 @@ func (ch *commandHandler) RunApplicationCommand(name string, args Args) error {
 func (ch *commandHandler) Unregister(name string) error {
 	if _, ok := ch.ApplicationCommands[name]; ok {
 		ch.ApplicationCommands[name] = nil
+	} else if _, ok := ch.WindowCommands[name]; ok {
+		ch.WindowCommands[name] = nil
 	} else if _, ok := ch.TextCommands[name]; ok {
 		ch.TextCommands[name] = nil
-	} else if _, ok := ch.WindowCommands[name]; !ok {
-		return fmt.Errorf("%s wasn't a registered command", name)
 	} else {
-		ch.WindowCommands[name] = nil
+		return fmt.Errorf("%s wasn't a registered command", name)
 	}
 	return nil
+}
+
+func (ch *commandHandler) RegisterWithDefault(cmd interface{}) error {
+	return ch.Register(DefaultName(cmd), cmd)
 }
 
 func (ch *commandHandler) Register(name string, cmd interface{}) error {

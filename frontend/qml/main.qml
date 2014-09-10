@@ -11,20 +11,59 @@ ApplicationWindow {
     height: 600
 
     property var myWindow
+    property bool ctrl
 
     menuBar: MenuBar {
         id: menu
         Menu {
             title: qsTr("&File")
             MenuItem {
-                text: qsTr("&New")
+                text: qsTr("&New File")
                 shortcut: "Ctrl+N"
-                onTriggered: editor.newWindow()
+                onTriggered: frontend.runCommand("new_file");
             }
             MenuItem {
-                text: qsTr("&Open")
+                text: qsTr("&Open File...")
                 shortcut: "Ctrl+O"
-                onTriggered: openDialog.open()
+                onTriggered: frontend.runCommand("open_file");
+            }
+            MenuItem {
+                text: qsTr("&Save")
+                shortcut: "Ctrl+S"
+                onTriggered: frontend.runCommand("save");
+            }
+            MenuItem {
+                text: qsTr("&Save As...")
+                shortcut: "Shift+Ctrl+S"
+                // TODO(.) : qml doesn't have a ready dialog like FileDialog
+                // onTriggered: saveAsDialog.open()
+            }
+            MenuSeparator{}
+            MenuItem {
+                text: qsTr("&New Window")
+                shortcut: "Shift+Ctrl+N"
+                onTriggered: frontend.runCommand("new_window");
+            }
+            MenuItem {
+                text: qsTr("&Close Window")
+                shortcut: "Shift+Ctrl+W"
+                onTriggered: frontend.runCommand("close_window");
+            }
+            MenuSeparator{}
+            MenuItem {
+                text: qsTr("&Close File")
+                shortcut: "Ctrl+W"
+                onTriggered: frontend.runCommand("close");
+            }
+            MenuItem {
+                text: qsTr("&Close All Files")
+                onTriggered: frontend.runCommand("close_all");
+            }
+            MenuSeparator{}
+            MenuItem {
+                text: qsTr("&Quit")
+                shortcut: "Ctrl+Q"
+                onTriggered: Qt.quit(); // frontend.runCommand("quit");
             }
         }
     }
@@ -84,7 +123,11 @@ ApplicationWindow {
     Item {
         anchors.fill: parent
         Keys.onPressed: {
+            ctrl = (event.modifiers && Qt.ControlModifier) ? true : false;
             event.accepted = frontend.handleInput(event.key, event.modifiers)
+        }
+        Keys.onReleased: {
+            ctrl = false;
         }
         focus: true // Focus required for Keys.onPressed
         SplitView {
@@ -101,7 +144,7 @@ ApplicationWindow {
                         tab: Item {
                             implicitWidth: 180
                             implicitHeight: 28
-                             ToolTip {
+                            ToolTip {
                                 id: tooltip
                                 backgroundColor: "#BECCCC66"
                                 textColor: "black"
@@ -158,8 +201,14 @@ ApplicationWindow {
                                 }
                             }
                         }
+                        onItemAdded: {
+                            if (myWindow.activeViewIndex() < tabs.count)
+                                tabs.currentIndex = myWindow.activeViewIndex()
+                        }
                     }
                     function resetminimap() {
+                        // TODO(.): This is conflicts on new file on new file the
+                        //          active_view should be the new file but it changes to first tab
                         myWindow.back().setActiveView(myWindow.view(currentIndex).back());
 
                         minimap.myView = myWindow.view(currentIndex);
@@ -182,7 +231,13 @@ ApplicationWindow {
                     property var realView
                     property var oldView
 
-                    function scroll() { children[1].contentY = percentage(realView)*(children[1].contentHeight-height); }
+                    function scroll() {
+                        var p = percentage(realView);
+                        children[1].contentY = p*(children[1].contentHeight-height);
+                        if (!ma.drag.active) {
+                            minimapArea.y =  p*(height-minimapArea.height)
+                        }
+                    }
 
                     onRealViewChanged: {
                         if (oldView) {
@@ -197,11 +252,27 @@ ApplicationWindow {
                     id: minimap
                     Rectangle {
                         id: minimapArea
-                        y: parent.percentage(parent.children[1])*(parent.height-height)
                         width: parent.width
                         height: parent.realView ? parent.realView.visibleArea.heightRatio*parent.children[1].contentHeight : parent.height
                         color: "white"
                         opacity: 0.1
+                        onYChanged: {
+                            if (ma.drag.active) {
+                                parent.realView.contentY = y*(parent.realView.contentHeight-parent.realView.height)/(parent.height-height);
+                            }
+                        }
+                        onHeightChanged: {
+                            parent.scroll();
+                        }
+                        MouseArea {
+                            id: ma
+                            drag.target: parent
+                            anchors.fill: parent
+                            drag.minimumX: 0
+                            drag.minimumY: 0
+                            drag.maximumY: parent.parent.height-height
+                            drag.maximumX: parent.parent.width-width
+                        }
                     }
                 }
             }
@@ -226,7 +297,11 @@ ApplicationWindow {
 
     FileDialog {
         id: openDialog
-        title: qsTr("Please choose a file:")
+        title: qsTr("Open File")
+        // TODO(.) : folder should be set to current view directory
+        // folder: myWindow.view(tabs.currentIndex).title.text
+        // TODO(.) : Selecting multiple files should be enabled
+        // selectMultiple: true
         onAccepted: {
             var _url = openDialog.fileUrl.toString()
             if(_url.length >= 7 && _url.slice(0, 7) == "file://") {

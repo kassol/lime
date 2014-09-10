@@ -14,6 +14,7 @@ import (
 	"github.com/limetext/lime/backend/util"
 	"github.com/limetext/termbox-go"
 	. "github.com/quarnster/util/text"
+	"os"
 	"runtime/debug"
 	"strconv"
 	"sync"
@@ -373,13 +374,19 @@ func (t *tbfe) renderthread() {
 }
 
 func (t *tbfe) loop() {
+
 	var (
-		ed  = t.setupEditor()
-		c   = ed.Console()
-		w   = ed.NewWindow()
-		v   = createNewView("main.go", w)
-		sel = v.Sel()
+		ed = t.setupEditor()
+		c  = ed.Console()
+		w  = ed.NewWindow()
+		v  *backend.View
 	)
+
+	if len(os.Args) > 1 {
+		v = createNewView(os.Args[1], w)
+	} else {
+		v = w.NewFile()
+	}
 
 	t.settings = getSettings(v)
 	c.Buffer().AddCallback(t.scroll)
@@ -388,8 +395,6 @@ func (t *tbfe) loop() {
 	loadTextMateScheme()
 	setColorMode()
 	setSchemeSettings()
-	sel.Clear()
-	sel.Add(Region{0, 0})
 
 	evchan := make(chan termbox.Event, 32)
 	defer func() {

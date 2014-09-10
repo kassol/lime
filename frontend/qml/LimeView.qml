@@ -5,8 +5,8 @@ Item {
     id: viewItem
     property var myView
     property bool isMinimap: false
-    property double fontSize: isMinimap ? 4 : parseFloat(myView.setting("font_size"))
-    property string fontFace: String(myView.setting("font_face"))
+    property double fontSize: isMinimap ? 4 : 12
+    property string fontFace: "Helvetica"
     property var cursor: Qt.IBeamCursor
     function sel() {
         if (!myView || !myView.back()) return null;
@@ -18,12 +18,18 @@ Item {
     }
     onMyViewChanged: {
         view.myView = myView;
+        if (myView != null) {
+            viewItem.fontSize = isMinimap ? 4 : parseFloat(myView.setting("font_size"));
+            viewItem.fontFace = String(myView.setting("font_face"));
+        }
     }
     ListView {
         id: view
         property var myView
+        boundsBehavior: Flickable.StopAtBounds
         anchors.fill: parent
         interactive: false
+        cacheBuffer: contentHeight
         onMyViewChanged: {
             if (myView != null) {
                 model = myView.len;
@@ -60,6 +66,7 @@ Item {
             }
         ]
         MouseArea {
+            enabled: !isMinimap
             property var point: new Object()
             x: 0
             y: 0
@@ -67,60 +74,69 @@ Item {
             width: parent.width-verticalScrollBar.width
             propagateComposedEvents: true
             cursorShape: parent.cursor
-            function measure(el, line, mouse) {
+            Text {
+                // just used to measure the text.
+                // If we change an actual displayed item's text,
+                // there's a risk (or is it always happening?)
+                // that the backend stored text data is no longer
+                // connected with that text item and hence changes
+                // made backend side aren't propagated.
+                id: dummy
+                font.family: viewItem.fontFace
+                font.pointSize: viewItem.fontSize
+                textFormat: TextEdit.RichText
+                visible: false
+            }
+            function measure(el, line, x) {
                 var line = myView.back().buffer().line(myView.back().buffer().textPoint(line, 0));
                 // If we are clicking out of line width return end of line column
-                if(mouse.x > el.width) return myView.back().buffer().rowCol(line.b)[1]
+                if(x > el.width) return myView.back().buffer().rowCol(line.b)[1]
                 var str  = myView.back().buffer().substr(line);
                 // We try to start searching from somewhere close to click position
-                var col  = Math.floor(0.5 + str.length * mouse.x/el.width);
+                var col  = Math.floor(0.5 + str.length * x/el.width);
 
                 // Trying to find closest column to clicked position
-                el.text = "<span style=\"white-space:pre\">" + str.substr(0, col) + "</span>";
-                var d = Math.abs(mouse.x - el.width)
-                var add = (mouse.x > el.width) ? 1 : -1
-                while(Math.abs(mouse.x - el.width) <= d) {
-                    d = el.width - mouse.x
-                    col += add
-                    el.text = "<span style=\"white-space:pre\">" + str.substr(0, col) + "</span>";
+                dummy.text = "<span style=\"white-space:pre\">" + str.substr(0, col) + "</span>";
+                var d = Math.abs(x - dummy.width);
+                var add = (x > dummy.width) ? 1 : -1
+                while(Math.abs(x - dummy.width) <= d) {
+                    d = Math.abs(x - dummy.width);
+                    col += add;
+                    dummy.text = "<span style=\"white-space:pre\">" + str.substr(0, col) + "</span>";
                 }
-                col -= add
+                col -= add;
 
-                el.text = el.line.text;
-                return col
+                return col;
             }
             onPositionChanged: {
-                var item  = view.itemAt(0, mouse.y)
-                var index = view.indexAt(0, mouse.y)
-                if (item != null) {
-                    var col   = measure(item, index, mouse)
-                    point.r = myView.back().buffer().textPoint(index, col)
+                var item  = view.itemAt(0, mouse.y+view.contentY);
+                var index = view.indexAt(0, mouse.y+view.contentY);
+                var s = sel();
+                if (item != null && sel != null) {
+                    var col = measure(item, index, mouse.x);
+                    point.r = myView.back().buffer().textPoint(index, col);
                     if (point.p != null && point.p != point.r) {
-                        if (point.r > point.p)
-                            myView.addR(point.p, point.r)
-                        else
-                            myView.addR(point.r, point.p)
+                        // Remove the last region and replace it with new one
+                        var r = s.get(s.len()-1);
+                        s.substract(r);
+                        s.add(myView.region(point.p, point.r));
                     }
                 }
-                point.r = null
+                point.r = null;
             }
             onPressed: {
                 // TODO:
                 // Changing caret position doesn't work on empty lines
-                // Multi cursor on holding ctrl key
-                // After changing caret position the line doesn't respond to inputs
                 if (!isMinimap) {
-                    var item  = view.itemAt(0, mouse.y)
-                    var index = view.indexAt(0, mouse.y)
+                    var item  = view.itemAt(0, mouse.y+view.contentY)
+                    var index = view.indexAt(0, mouse.y+view.contentY)
                     if (item != null) {
-                        var col = measure(item, index, mouse)
+                        var col = measure(item, index, mouse.x);
                         point.p = myView.back().buffer().textPoint(index, col)
-                        // If ctrl is not pressed clear the regions
-                        if (!false)
-                            myView.back().sel().clear()
-                        myView.addR(point.p, point.p)
+
+                        if (!ctrl) sel().clear();
+                        sel().add(myView.region(point.p, point.p))
                     }
-                    regs.model = sel().len()
                 }
             }
             onWheel: {
@@ -166,6 +182,7 @@ Item {
         }
 
         clip: true
+        z: 4
     }
     Repeater {
         id: regs
@@ -173,77 +190,105 @@ Item {
         Rectangle {
             property var rowcol
             property var cursor: children[0]
-            color: "white"
-            radius: 1
-            opacity: 0.6
+            color: "#444444"
+            radius: 2
+            border.color: "#1c1c1c"
+            height: cursor.height
             Text {
-                anchors.left: parent.right
-                color: "white"
+                color: "#F8F8F0"
                 font.family: viewItem.fontFace
                 font.pointSize: fontSize
             }
-            Timer {
-                interval: 100
-                running: true
-                repeat: true
-                function measure(p, rowcol) {
-                    var back = myView.back();
-                    if (!back) { return 0; }
-                    var buf = back.buffer();
-                    if (!buf) { return 0; }
-                    var line = buf.line(p);
-                    // TODO(.): would be better to use proper font metrics
-                    // TODO(.): This assignment makes qml panic with the confusing error
-                    // "panic: cannot use int as a int"
-                    // line.b = p;
-                    var str = buf.substr(line);
-                    str = str.substr(0, rowcol[1]);
-                    cursor.textFormat = TextEdit.RichText;
-                    cursor.text = "<span style=\"white-space:pre\">" + str + "</span>";
-                    var ret = cursor.width;
-                    cursor.textFormat = TextEdit.PlainText;
-                    cursor.text = "";
+            y: rowcol ? rowcol[0]*(view.contentHeight/view.count)-view.contentY : 0;
+            z: 3
+        }
+    }
+    Timer {
+        interval: 100
+        running: true
+        repeat: true
+        function measure(p, rowcol, cursor, buf) {
+            var line = buf.line(p);
+            if (!line) return 0;
+            var str  = buf.substr(line);
+            if (!str) return 0;
 
-                    return (ret == null) ? 0 : ret;
+            str = str.substr(0, rowcol[1]);
+            cursor.textFormat = TextEdit.RichText;
+            cursor.text = "<span style=\"white-space:pre\">" + str + "</span>";
+            var ret = cursor.width;
+            cursor.textFormat = TextEdit.PlainText;
+            cursor.text = "";
+
+            return (ret == null) ? 0 : ret;
+        }
+        // Works like buffer.Lines()
+        function lines(sel, buf) {
+            if (!sel) return;
+            var lines  = new Array();
+            var sel = (sel.b > sel.a) ? {a: sel.a, b: sel.b} : {a: sel.b, b: sel.a};
+            var rc = {a: buf.rowCol(sel.a), b: buf.rowCol(sel.b)};
+
+            for(var i = rc.a[0]; i <= rc.b[0]; i++) {
+                var mysel = buf.line(buf.textPoint(i, 0));
+                // Sometimes null don't know why
+                if (!mysel) continue;
+                var a = (i == rc.a[0]) ? sel.a : mysel.a;
+                var b = (i == rc.b[0]) ? sel.b : mysel.b;
+                var res = (b > a) ? {a: a, b: b} : {a: b, b: a};
+                lines.push(res);
+            }
+            return lines;
+        }
+        onTriggered: {
+            // TODO(.): not too happy about actively polling like this
+            var s = sel();
+            if (!s) return;
+            var back = myView.back()
+            if (!back) return;
+            var buf = back.buffer();
+            if (!buf) return;
+            var of = 0;
+            regs.model = myView.lines();
+            for(var i = 0; i < s.len(); i++) {
+                var rect = regs.itemAt(i);
+                var mysel = s.get(i);
+                if (!mysel || !rect) continue;
+
+                var rowcol;
+                var lns = lines(mysel, buf);
+
+                if (mysel.b <= mysel.a) lns.reverse();
+                for(var j = 0; j < lns.length; j++) {
+                    rect = regs.itemAt(i+of);
+                    of++;
+                    rowcol = buf.rowCol(lns[j].a);
+                    rect.rowcol = rowcol;
+                    rect.x = measure(lns[j].a, rowcol, rect.cursor, buf);
+                    rowcol = buf.rowCol(lns[j].b);
+                    rect.width = measure(lns[j].b, rowcol, rect.cursor, buf) - rect.x;
                 }
-                onTriggered: {
-                    // TODO(.): not too happy about actively polling like this
-                    var s = sel();
-                    if (!s) return;
-                    if (index >= s.len()) {
-                        return;
-                    }
-                    parent.width = 0
-                    parent.height = 0
+                of--;
 
-                    var mysel = s.get(index);
-                    parent.rowcol = myView.back().buffer().rowCol(mysel.a);
-                    var begin = measure(mysel.a, parent.rowcol);
+                rect.cursor.x = (mysel.b <= mysel.a) ? -3 : rect.width-2;
+                rect.cursor.opacity = 0.5 + 0.5 * Math.sin(Date.now()*0.008);;
 
-                    if (mysel.a != mysel.b) {
-                        var rcb = myView.back().buffer().rowCol(mysel.b);
-                        var end = measure(mysel.b, rcb);
-                        parent.width = end - begin
-                        parent.height = cursor.height
-                        parent.rowcol = rcb
-                    }
-
-                    parent.x = begin;
-                    cursor.opacity = 0.5 + 0.5 * Math.sin(Date.now()*0.008);
-
-                    var style = myView.setting("caret_style");
-                    var inv = myView.setting("inverse_caret_state");
-                    if (style == "underscore") {
-                        if (inv) {
-                            cursor.text = "_";
-                        } else {
-                            cursor.text = "|";
-                            parent.x -= 2;
-                        }
+                var style = myView.setting("caret_style");
+                var inv = myView.setting("inverse_caret_state");
+                if (style == "underscore") {
+                    if (inv) {
+                        rect.cursor.text = "_";
+                    } else {
+                        rect.cursor.text = "|";
                     }
                 }
             }
-            y: rowcol ? rowcol[0]*(view.contentHeight/view.count)-view.contentY : 0;
+            // Clearing
+            for(var i = of+s.len()+1; i < regs.count; i++) {
+                var rect = regs.itemAt(i);
+                if (rect == null) continue;
+                rect.width = 0;
+            }
         }
     }
 }

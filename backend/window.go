@@ -73,6 +73,8 @@ func (w *Window) OpenFile(filename string, flags int) *View {
 		v.Insert(e, 0, string(d))
 	}
 	v.EndEdit(e)
+	v.selection.Clear()
+	v.selection.Add(text.Region{0, 0})
 	v.SetScratch(false)
 	OnLoad.Call(v)
 
@@ -94,6 +96,18 @@ func (w *Window) SetActiveView(v *View) {
 
 func (w *Window) ActiveView() *View {
 	return w.active_view
+}
+
+func (w *Window) Close() {
+	w.CloseAllViews()
+	ed := GetEditor()
+	ed.remove(w)
+}
+
+func (w *Window) CloseAllViews() {
+	for _, v := range w.views {
+		v.Close()
+	}
 }
 
 func (w *Window) runCommand(c WindowCommand, name string) error {

@@ -106,15 +106,20 @@ func init() {
 		{"INHIBIT_EXPLICIT_COMPLETIONS", 0},
 		{"LITERAL", 0},
 		{"IGNORECASE", 0},
-		{"CLASS_WORD_START", 0},
-		{"CLASS_WORD_END", 0},
-		{"CLASS_PUNCTUATION_START", 0},
-		{"CLASS_PUNCTUATION_END", 0},
-		{"CLASS_SUB_WORD_START", 0},
-		{"CLASS_SUB_WORD_END", 0},
-		{"CLASS_LINE_START", 0},
-		{"CLASS_LINE_END", 0},
-		{"CLASS_EMPTY_LINE", 0},
+		{"CLASS_WORD_START", int(backend.CLASS_WORD_START)},
+		{"CLASS_WORD_END", int(backend.CLASS_WORD_END)},
+		{"CLASS_PUNCTUATION_START", int(backend.CLASS_PUNCTUATION_START)},
+		{"CLASS_PUNCTUATION_END", int(backend.CLASS_PUNCTUATION_END)},
+		{"CLASS_SUB_WORD_START", int(backend.CLASS_SUB_WORD_START)},
+		{"CLASS_SUB_WORD_END", int(backend.CLASS_SUB_WORD_END)},
+		{"CLASS_LINE_START", int(backend.CLASS_LINE_START)},
+		{"CLASS_LINE_END", int(backend.CLASS_LINE_END)},
+		{"CLASS_EMPTY_LINE", int(backend.CLASS_EMPTY_LINE)},
+		{"CLASS_MIDDLE_WORD", int(backend.CLASS_MIDDLE_WORD)},
+		{"CLASS_WORD_START_WITH_PUNCTUATION", int(backend.CLASS_WORD_START_WITH_PUNCTUATION)},
+		{"CLASS_WORD_END_WITH_PUNCTUATION", int(backend.CLASS_WORD_END_WITH_PUNCTUATION)},
+		{"CLASS_OPENING_PARENTHESIS", int(backend.CLASS_OPENING_PARENTHESIS)},
+		{"CLASS_CLOSING_PARENTHESIS", int(backend.CLASS_CLOSING_PARENTHESIS)},
 		{"DRAW_EMPTY", int(render.DRAW_EMPTY)},
 		{"HIDE_ON_MINIMAP", int(render.HIDE_ON_MINIMAP)},
 		{"DRAW_EMPTY_AS_OVERWRITE", int(render.DRAW_EMPTY_AS_OVERWRITE)},
@@ -141,9 +146,9 @@ func init() {
 			panic(err)
 		}
 	}
-	py.AddToPath("../../backend/packages/")
-	py.AddToPath("../../3rdparty/bundles/")
-	py.AddToPath("../../backend/sublime/")
+	py.AddToPath(backend.LIME_PACKAGES_PATH)
+	py.AddToPath(backend.LIME_USER_PACKAGES_PATH)
+	py.AddToPath(path.Join("..", "..", "backend", "sublime"))
 }
 
 func loadPlugin(p *backend.Plugin, m *py.Module) {
@@ -191,11 +196,12 @@ func observePlugins(m *py.Module) {
 	for {
 		select {
 		case ev := <-watcher.Event:
-			if ev.IsModify() {
-				if p, exist := watchedPlugins[path.Dir(ev.Name)]; exist {
-					p.Reload()
-					loadPlugin(p.Package().(*backend.Plugin), m)
-				}
+			if !(ev.IsModify() || ev.IsCreate()) {
+				continue
+			}
+			if p, exist := watchedPlugins[path.Dir(ev.Name)]; exist {
+				p.Reload()
+				loadPlugin(p.Package().(*backend.Plugin), m)
 			}
 		case err := <-watcher.Error:
 			log4go.Error("error:", err)
@@ -228,7 +234,7 @@ func Init() {
 	plugins := backend.ScanPlugins(backend.LIME_USER_PACKAGES_PATH, ".py")
 	for _, p := range plugins {
 		// TODO: add all plugins after supporting all commands
-		if p.Name() == "../../3rdparty/bundles/Vintageous" {
+		if p.Name() == path.Join("..", "..", "3rdparty", "bundles", "Vintageous") {
 			loadPlugin(p, m)
 		}
 	}

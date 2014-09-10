@@ -2,7 +2,7 @@
 
 # Just so that our oniguruma.pc is found if
 # the user doesn't have an oniguruma.pc.
-export PKG_CONFIG_PATH=$PKG_CONFIG_PATH:$PWD/../rubex
+export PKG_CONFIG_PATH=$PKG_CONFIG_PATH:$PWD/../../../github.com/limetext/rubex
 
 # Colors.
 RED="\e[31m"
@@ -13,7 +13,7 @@ RESET="\e[0m"
 function fold_start {
     if [ "$TRAVIS" == "true" ]; then
         echo -en "travis_fold:start:$1\r"
-        echo "\$ $1"
+        echo "\$ $2"
     fi
 }
 
@@ -23,9 +23,13 @@ function fold_end {
     fi
 }
 
-function do_test {
-	go test ./$1/...
+function run_tests {
+	go test "$1" -covermode=count -coverprofile=tmp.cov
 	build_result=$?
+	# Can't do race tests at the same time as coverage as it'll report
+	# lots of false positives then..
+	go test -race "$1"
+	let build_result=$build_result+$?
 	echo -ne "${YELLOW}=>${RESET} test $1 - "
 	if [ "$build_result" == "0" ]; then
 	    echo -e "${GREEN}SUCCEEDED${RESET}"
@@ -34,36 +38,47 @@ function do_test {
 	fi
 }
 
-# Just to fetch all dependencies needed
-# Do *not* add "-u", or pull requests will not actually be built,
-# instead it'll checkout master
-fold_start "bootstrap"
-go get -d github.com/limetext/lime/frontend/termbox
-fold_end "bootstrap"
+function test_all {
+	let a=0
+	for pkg in $(go list "./$1/..."); do
+		run_tests "$pkg"
+		let a=$a+$build_result
+		if [ "$build_result" == "0" ]; then
+			sed 1d tmp.cov >> coverage.cov
+		fi
+	done
+	build_result=$a
+}
 
-fold_start "Gen Python"
-go run tasks/build/gen_python_api.go
-fold_end "Gen Python"
+fold_start "get.cov" "get coverage tools"
+go get code.google.com/p/go.tools/cmd/cover
+go get github.com/mattn/goveralls
+go get github.com/axw/gocov/gocov
+fold_end "get.cov"
 
-fold_start "Add License"
-go run tasks/build/fix.go
-fold_end "Add License"
-
-# Actual build now that the python api has been refreshed
-fold_start "termbox"
+fold_start "get.termbox" "get termbox"
 go get github.com/limetext/lime/frontend/termbox
-fold_end "termbox"
+fold_end "get.termbox"
 
-# Installing qml dependencies fails atm.
-# fold_start "qml"
-# go get github.com/limetext/lime/frontend/qml
-# fold_end "qml"
+echo "mode: count" > coverage.cov
 
-do_test "backend"
-fail1=$build_result
+ret=0
 
-do_test "frontend/termbox"
-fail2=$build_result
+fold_start "test.backend" "test backend"
+test_all "backend"
+let ret=$ret+$build_result
+fold_end "test.backend"
 
-let ex=$fail1+$fail2
-exit $ex
+fold_start "test.termbox" "test termbox"
+test_all "frontend/termbox"
+let ret=$ret+$build_result
+fold_end "test.termbox"
+
+if [ "$ret" == "0" ]; then
+	fold_start "coveralls" "post to coveralls"
+	"$(go env GOPATH | awk 'BEGIN{FS=":"} {print $1}')/bin/goveralls" -coverprofile=coverage.cov -service=travis-ci
+	let ret=$ret+$?
+	fold_end "coveralls"
+fi
+
+exit $ret

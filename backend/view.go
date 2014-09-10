@@ -11,6 +11,7 @@ import (
 	"github.com/limetext/lime/backend/render"
 	"github.com/limetext/lime/backend/textmate"
 	. "github.com/limetext/lime/backend/util"
+	"github.com/limetext/rubex"
 	. "github.com/quarnster/util/text"
 	"io/ioutil"
 	"os"
@@ -75,6 +76,7 @@ func newView(w *Window) *View {
 		if syn != ret.cursyntax {
 			ret.cursyntax = syn
 			ret.reparse(true)
+			ret.loadSettings()
 		}
 	})
 
@@ -224,7 +226,14 @@ func (v *View) parsethread() {
 		}
 		return true
 	}
-	for pr := range v.reparseChan {
+	v.lock.Lock()
+	ch := v.reparseChan
+	v.lock.Unlock()
+	defer v.cleanup()
+	if ch == nil {
+		return
+	}
+	for pr := range ch {
 		if cc := v.buffer.ChangeCount(); lastParse != cc || pr.forced {
 			lastParse = cc
 			if doparse() {
@@ -240,9 +249,53 @@ func (v *View) parsethread() {
 //
 // The actual parsing is done in a separate go-routine, for which the
 // "lime.syntax.updated" setting will be set once it has finished.
+//
+// Note that it's presumed that the function calling this function
+// has locked the view!
 func (v *View) reparse(forced bool) {
+	if v.isClosed() {
+		// No point in issuing a re-parse if the view has been closed
+		return
+	}
 	if len(v.reparseChan) < cap(v.reparseChan) || forced {
 		v.reparseChan <- parseReq{forced}
+	}
+}
+
+// Will load view settings respect to current syntax
+// e.g if current syntax is Python settings order will be:
+// Packages/Python/Python.sublime-settings
+// Packages/Python/Python (Windows).sublime-settings
+// Packages/User/Python.sublime-settings
+// <Buffer Specific Settings>
+func (v *View) loadSettings() {
+	syntax := v.Settings().Get("syntax", "").(string)
+
+	if syntax == "" {
+		v.Settings().SetParent(v.window)
+		return
+	}
+
+	defSettings, usrSettings, platSettings := &HasSettings{}, &HasSettings{}, &HasSettings{}
+
+	defSettings.Settings().SetParent(v.window)
+	platSettings.Settings().SetParent(defSettings)
+	usrSettings.Settings().SetParent(platSettings)
+	v.Settings().SetParent(usrSettings)
+
+	ed := GetEditor()
+	if r, err := rubex.Compile(`([A-Za-z]+?)\.(?:[^.]+)$`); err != nil {
+		log4go.Error(err)
+		return
+	} else if s := r.FindStringSubmatch(syntax); s != nil {
+		p := path.Join(LIME_PACKAGES_PATH, s[1], s[1]+".sublime-settings")
+		ed.loadSetting(NewPacket(p, defSettings.Settings()))
+
+		p = path.Join(LIME_PACKAGES_PATH, s[1], s[1]+" ("+ed.plat()+").sublime-settings")
+		ed.loadSetting(NewPacket(p, platSettings.Settings()))
+
+		p = path.Join(LIME_USER_PACKETS_PATH, s[1]+".sublime-settings")
+		ed.loadSetting(NewPacket(p, usrSettings.Settings()))
 	}
 }
 
@@ -631,6 +684,21 @@ func (v *View) Transform(scheme render.ColourScheme, viewport Region) render.Rec
 	return render.Transform(scheme, rr, viewport)
 }
 
+func (v *View) cleanup() {
+	v.lock.Lock()
+	defer v.lock.Unlock()
+
+	// TODO(.): There can be multiple views into a single Buffer,
+	// need to do some reference counting to see when it should be
+	// closed
+	v.buffer.Close()
+	v.buffer = nil
+}
+
+func (v *View) isClosed() bool {
+	return v.reparseChan == nil
+}
+
 // Initiate the "close" operation of this view.
 func (v *View) Close() {
 	OnPreClose.Call(v)
@@ -640,10 +708,173 @@ func (v *View) Close() {
 			return
 		}
 	}
-	// TODO(.): There can be multiple views into a single Buffer,
-	// need to do some reference counting to see when it should be
-	// closed
-	v.buffer.Close()
-	v.window.remove(v)
+	if n := v.buffer.FileName(); n != "" {
+		GetEditor().UnWatch(n)
+	}
+
+	// Call the event first while there's still access possible to the underlying
+	// buffer
 	OnClose.Call(v)
+
+	v.window.remove(v)
+
+	// Closing the reparseChan, and setting to nil will eventually clean up other resources
+	// when the parseThread exits
+	v.lock.Lock()
+	defer v.lock.Unlock()
+	close(v.reparseChan)
+	v.reparseChan = nil
+}
+
+const (
+	CLASS_WORD_START = 1 << iota
+	CLASS_WORD_END
+	CLASS_PUNCTUATION_START
+	CLASS_PUNCTUATION_END
+	CLASS_SUB_WORD_START
+	CLASS_SUB_WORD_END
+	CLASS_LINE_START
+	CLASS_LINE_END
+	CLASS_EMPTY_LINE
+	CLASS_MIDDLE_WORD
+	CLASS_WORD_START_WITH_PUNCTUATION
+	CLASS_WORD_END_WITH_PUNCTUATION
+	CLASS_OPENING_PARENTHESIS
+	CLASS_CLOSING_PARENTHESIS
+)
+
+// Classifies point, returning a bitwise OR of zero or more of defined flags
+func (v *View) Classify(point int) (res int) {
+	var a, b string = "", ""
+	ws := v.Settings().Get("word_separators", "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~]").(string)
+	if point > 0 {
+		a = v.buffer.Substr(Region{point - 1, point})
+	}
+	if point < v.buffer.Size() {
+		b = v.buffer.Substr(Region{point, point + 1})
+	}
+
+	// Special cases
+	if v.buffer.Size() == 0 || point < 0 || point > v.buffer.Size() {
+		res = 3520
+		return
+	}
+	if re, err := rubex.Compile("[A-Z]"); err != nil {
+		log4go.Error(err)
+	} else {
+		if re.MatchString(b) && !re.MatchString(a) {
+			res |= CLASS_SUB_WORD_START
+			res |= CLASS_SUB_WORD_END
+		}
+	}
+	if a == "," {
+		res |= CLASS_OPENING_PARENTHESIS
+	}
+	if b == "," {
+		res |= CLASS_CLOSING_PARENTHESIS
+	}
+	if a == "," && b == "," {
+		res = 0
+		return
+	}
+	// Punc start & end
+	if re, err := rubex.Compile(ws); err != nil {
+		log4go.Error(err)
+	} else {
+		if (re.MatchString(b) || b == "") && !re.MatchString(a) {
+			res |= CLASS_PUNCTUATION_START
+		}
+		if (re.MatchString(a) || a == "") && !re.MatchString(b) {
+			res |= CLASS_PUNCTUATION_END
+		}
+		// Word start & end
+		if re1, err := rubex.Compile("\\w"); err != nil {
+			log4go.Error(err)
+		} else if re2, err := rubex.Compile("\\s"); err != nil {
+			log4go.Error(err)
+		} else {
+			if re1.MatchString(b) && (re.MatchString(a) || re2.MatchString(a) || a == "") {
+				res |= CLASS_WORD_START
+			}
+			if re1.MatchString(a) && (re.MatchString(b) || re2.MatchString(b) || b == "") {
+				res |= CLASS_WORD_END
+			}
+		}
+	}
+	// SubWord start & end
+
+	// Line start & end
+	if a == "\n" || a == "" {
+		res |= CLASS_LINE_START
+	}
+	if b == "\n" || b == "" {
+		res |= CLASS_LINE_END
+	}
+	// Empty line
+	if (a == "\n" && b == "\n") || (a == "" && b == "") {
+		res |= CLASS_EMPTY_LINE
+	}
+	// Middle word
+	if re, err := rubex.Compile("\\w"); err != nil {
+		log4go.Error(err)
+	} else {
+		if re.MatchString(a) && re.MatchString(b) {
+			res |= CLASS_MIDDLE_WORD
+		}
+	}
+	// Word start & end with punc
+	if re, err := rubex.Compile("\\s"); err != nil {
+		log4go.Error(err)
+	} else {
+		if (res&CLASS_PUNCTUATION_START == CLASS_PUNCTUATION_START) && (re.MatchString(a) || a == "") {
+			res |= CLASS_WORD_START_WITH_PUNCTUATION
+		}
+		if (res&CLASS_PUNCTUATION_END == CLASS_PUNCTUATION_END) && (re.MatchString(b) || b == "") {
+			res |= CLASS_WORD_END_WITH_PUNCTUATION
+		}
+	}
+	// Openning & closing parentheses
+	if re, err := rubex.Compile("[(\\[{]"); err != nil {
+		log4go.Error(err)
+	} else {
+		if re.MatchString(a) || re.MatchString(b) {
+			res |= CLASS_OPENING_PARENTHESIS
+		}
+		if re.MatchString(a) && a == b {
+			res = 0
+			return
+		}
+	}
+	if re, err := rubex.Compile("[)\\]}]"); err != nil {
+		log4go.Error(err)
+	} else {
+		if re.MatchString(a) || re.MatchString(b) {
+			res |= CLASS_CLOSING_PARENTHESIS
+		}
+		if re.MatchString(a) && a == b {
+			res = 0
+			return
+		}
+	}
+	return
+}
+
+// Finds the next location after point that matches the given classes
+// Searches backward if forward is false
+func (v *View) FindByClass(point int, forward bool, classes int) Region {
+	i := -1
+	if forward {
+		i = 1
+	}
+	for p := point; ; p += i {
+		if p <= 0 {
+			return Region{0, 0}
+		}
+		if p >= v.buffer.Size() {
+			return Region{v.buffer.Size(), v.buffer.Size()}
+		}
+		if v.Classify(p)&classes == classes {
+			return Region{p, p}
+		}
+	}
 }

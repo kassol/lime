@@ -11,6 +11,7 @@ import (
 	"github.com/limetext/lime/backend/loaders"
 	. "github.com/limetext/lime/backend/util"
 	. "github.com/quarnster/util/text"
+	"path"
 	"runtime"
 	"runtime/debug"
 	"sync"
@@ -35,10 +36,11 @@ type (
 		keyInput      chan (KeyPress)
 		watcher       *fsnotify.Watcher
 		watchedFiles  map[string]Watched
+		watchLock     sync.Mutex
 	}
 
 	// The Frontend interface defines the API
-	// for functionality that that is frontend specific.
+	// for functionality that is frontend specific.
 	Frontend interface {
 		// Probe the frontend for the currently
 		// visible region of the given view.
@@ -68,23 +70,32 @@ type (
 		log chan string
 	}
 	DummyFrontend struct {
+		m sync.Mutex
 		// Default return value for OkCancelDialog
-		DefaultAction bool
+		defaultAction bool
 	}
 )
 
-const (
-	LIME_USER_PACKAGES_PATH = "../../3rdparty/bundles/"
-	LIME_USER_PACKETS_PATH  = "../../3rdparty/bundles/User/"
-	LIME_DEFAULTS_PATH      = "../../backend/packages/Default/"
+var (
+	LIME_USER_PACKAGES_PATH = path.Join("..", "..", "3rdparty", "bundles")
+	LIME_USER_PACKETS_PATH  = path.Join("..", "..", "3rdparty", "bundles", "User")
+	LIME_PACKAGES_PATH      = path.Join("..", "..", "backend", "packages")
+	LIME_DEFAULTS_PATH      = path.Join("..", "..", "backend", "packages", "Default")
 )
 
+func (h *DummyFrontend) SetDefaultAction(action bool) {
+	h.m.Lock()
+	defer h.m.Unlock()
+	h.defaultAction = action
+}
 func (h *DummyFrontend) StatusMessage(msg string) { log4go.Info(msg) }
 func (h *DummyFrontend) ErrorMessage(msg string)  { log4go.Error(msg) }
 func (h *DummyFrontend) MessageDialog(msg string) { log4go.Info(msg) }
 func (h *DummyFrontend) OkCancelDialog(msg string, button string) bool {
 	log4go.Info(msg)
-	return h.DefaultAction
+	h.m.Lock()
+	defer h.m.Unlock()
+	return h.defaultAction
 }
 func (h *DummyFrontend) Show(v *View, r Region)       {}
 func (h *DummyFrontend) VisibleRegion(v *View) Region { return Region{} }
@@ -161,29 +172,28 @@ func (e *Editor) SetFrontend(f Frontend) {
 }
 
 func (e *Editor) Init() {
-	ed.loadKeybindings()
+	ed.loadKeyBindings()
 	ed.loadSettings()
 }
 
-func (e *Editor) loadKeybinding(pkg *packet) {
-	var bindings KeyBindings
-	if err := loaders.LoadJSON(pkg.Get().([]byte), &bindings); err != nil {
+func (e *Editor) loadKeyBinding(pkg *packet) {
+	if err := loaders.LoadJSON(pkg.Get().([]byte), pkg); err != nil {
 		log4go.Error(err)
 	} else {
 		log4go.Info("Loaded %s", pkg.Name())
 		e.Watch(NewWatchedPackage(pkg))
 	}
-	e.keyBindings.merge(&bindings)
+	e.keyBindings.merge(pkg.marshalTo.(*KeyBindings))
 }
 
-func (e *Editor) loadKeybindings() {
+func (e *Editor) loadKeyBindings() {
 	for _, p := range packets.filter("keymap") {
-		e.loadKeybinding(p)
+		e.loadKeyBinding(p)
 	}
 }
 
 func (e *Editor) loadSetting(pkg *packet) {
-	if err := loaders.LoadJSON(pkg.Get().([]byte), e.Settings()); err != nil {
+	if err := loaders.LoadJSON(pkg.Get().([]byte), pkg); err != nil {
 		log4go.Error(err)
 	} else {
 		log4go.Info("Loaded %s", pkg.Name())
@@ -192,13 +202,25 @@ func (e *Editor) loadSetting(pkg *packet) {
 }
 
 func (e *Editor) loadSettings() {
-	for _, p := range packets.filter("setting") {
-		e.loadSetting(p)
-	}
+	defSettings, platSettings := &HasSettings{}, &HasSettings{}
+	platSettings.Settings().SetParent(defSettings)
+	ed.Settings().SetParent(platSettings)
+
+	p := path.Join(LIME_DEFAULTS_PATH, "Preferences.sublime-settings")
+	defPckt := NewPacket(p, defSettings.Settings())
+	e.loadSetting(defPckt)
+
+	p = path.Join(LIME_DEFAULTS_PATH, "Preferences ("+e.plat()+").sublime-settings")
+	platPckt := NewPacket(p, platSettings.Settings())
+	e.loadSetting(platPckt)
+
+	p = path.Join(LIME_USER_PACKETS_PATH, "Preferences.sublime-settings")
+	userPckt := NewPacket(p, e.Settings())
+	e.loadSetting(userPckt)
 }
 
 func (e *Editor) PackagesPath() string {
-	return "../../3rdparty/bundles/"
+	return LIME_USER_PACKAGES_PATH
 }
 
 func (e *Editor) Console() *View {
@@ -208,7 +230,7 @@ func (e *Editor) Console() *View {
 func (e *Editor) Windows() []*Window {
 	edl.Lock()
 	defer edl.Unlock()
-	ret := make([]*Window, 0, len(e.windows))
+	ret := make([]*Window, len(e.windows))
 	copy(ret, e.windows)
 	return ret
 }
@@ -236,12 +258,38 @@ func (e *Editor) NewWindow() *Window {
 	return w
 }
 
+func (e *Editor) remove(w *Window) {
+	edl.Lock()
+	defer edl.Unlock()
+	for i, ww := range e.windows {
+		if w == ww {
+			end := len(e.windows) - 1
+			if i != end {
+				copy(e.windows[i:], e.windows[i+1:])
+			}
+			e.windows = e.windows[:end]
+			return
+		}
+	}
+	log4go.Error("Wanted to remove window %+v, but it doesn't appear to be a child of this editor", w)
+}
+
 func (e *Editor) Arch() string {
 	return runtime.GOARCH
 }
 
 func (e *Editor) Platform() string {
 	return runtime.GOOS
+}
+
+func (e *Editor) plat() string {
+	switch e.Platform() {
+	case "windows":
+		return "Windows"
+	case "darwin":
+		return "OSX"
+	}
+	return "Linux"
 }
 
 func (e *Editor) Version() string {
@@ -295,18 +343,7 @@ func (e *Editor) inputthread() {
 
 		if action := possible_actions.Action(v); action != nil {
 			p2 := Prof.Enter("hi.perform")
-			// TODO: what's the command precedence?
-			if c := e.cmdhandler.TextCommands[action.Command]; c != nil {
-				if err := e.CommandHandler().RunTextCommand(v, action.Command, action.Args); err != nil {
-					log4go.Debug("Couldn't run textcommand: %s", err)
-				}
-			} else if c := e.cmdhandler.WindowCommands[action.Command]; c != nil {
-				if err := e.CommandHandler().RunWindowCommand(wnd, action.Command, action.Args); err != nil {
-					log4go.Debug("Couldn't run windowcommand: %s", err)
-				}
-			} else if err := e.CommandHandler().RunApplicationCommand(action.Command, action.Args); err != nil {
-				log4go.Debug("Couldn't run applicationcommand: %s", err)
-			}
+			e.RunCommand(action.Command, action.Args)
 			p2.Exit()
 		} else if possible_actions.keyOff > 1 {
 			lastBindings = e.keyBindings
@@ -334,7 +371,31 @@ func (e *Editor) LogCommands(l bool) {
 }
 
 func (e *Editor) RunCommand(name string, args Args) {
-	e.CommandHandler().RunApplicationCommand(name, args)
+	// TODO?
+	var (
+		wnd *Window
+		v   *View
+	)
+	if wnd = e.ActiveWindow(); wnd != nil {
+		v = wnd.ActiveView()
+	}
+
+	// TODO: what's the command precedence?
+	if c := e.cmdhandler.TextCommands[name]; c != nil {
+		if err := e.CommandHandler().RunTextCommand(v, name, args); err != nil {
+			log4go.Debug("Couldn't run textcommand: %s", err)
+		}
+	} else if c := e.cmdhandler.WindowCommands[name]; c != nil {
+		if err := e.CommandHandler().RunWindowCommand(wnd, name, args); err != nil {
+			log4go.Debug("Couldn't run windowcommand: %s", err)
+		}
+	} else if c := e.cmdhandler.ApplicationCommands[name]; c != nil {
+		if err := e.CommandHandler().RunApplicationCommand(name, args); err != nil {
+			log4go.Debug("Couldn't run applicationcommand: %s", err)
+		}
+	} else {
+		log4go.Debug("Couldn't find command to run")
+	}
 }
 
 func (e *Editor) SetClipboard(n string) {
@@ -350,11 +411,15 @@ func (e *Editor) Watch(file Watched) {
 	if err := e.watcher.Watch(file.Name()); err != nil {
 		log4go.Error("Could not watch file: %v", err)
 	} else {
+		e.watchLock.Lock()
+		defer e.watchLock.Unlock()
 		e.watchedFiles[file.Name()] = file
 	}
 }
 
 func (e *Editor) UnWatch(name string) {
+	e.watchLock.Lock()
+	defer e.watchLock.Unlock()
 	if err := e.watcher.RemoveWatch(name); err != nil {
 		log4go.Error("Couldn't unwatch file: %v", err)
 	}
@@ -367,9 +432,14 @@ func (e *Editor) observeFiles() {
 		select {
 		case ev := <-e.watcher.Event:
 			if ev.IsModify() {
-				if f, exist := e.watchedFiles[ev.Name]; exist {
-					f.Reload()
-				}
+				func() {
+					e.watchLock.Lock()
+					defer e.watchLock.Unlock()
+					f, exist := e.watchedFiles[ev.Name]
+					if exist {
+						f.Reload()
+					}
+				}()
 			}
 		case err := <-e.watcher.Error:
 			log4go.Error("error:", err)

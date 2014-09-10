@@ -7,6 +7,7 @@ package backend
 import (
 	"io/ioutil"
 	"os"
+	"path"
 	"testing"
 	"time"
 )
@@ -23,17 +24,89 @@ func (d *DummyWatched) Reload() {
 	// noop
 }
 
-func TestConfigLoading(t *testing.T) {
+func TestGetEditor(t *testing.T) {
+	e := GetEditor()
+	if e == nil {
+		t.Error("Expected an editor, but got nil")
+	}
+}
+
+func TestLoadKeyBinding(t *testing.T) {
+	var kb KeyBindings
+
 	editor := GetEditor()
-	editor.loadSetting(NewPacket("testdata/Default.sublime-settings"))
+	editor.loadKeyBinding(NewPacket("testdata/Default.sublime-keymap", new(KeyBindings)))
+
+	editor.keyBindings.filter(69, &kb)
+	if kb.Len() == 69 {
+		t.Errorf("Expected editor to have key %d bound, but it didn't", 69)
+	}
+}
+
+func TestLoadKeyBindings(t *testing.T) {
+	editor := GetEditor()
+	editor.loadKeyBindings()
+
+	editor.keyBindings.Len()
+	if editor.keyBindings.Len() <= 0 {
+		t.Errorf("Expected editor to have some keys bound, but it didn't")
+	}
+}
+
+func TestLoadSetting(t *testing.T) {
+	editor := GetEditor()
+	editor.loadSetting(NewPacket("testdata/Default.sublime-settings", editor.Settings()))
 
 	if editor.Settings().Has("tab_size") != true {
-		t.Error("Expected editor settings to have tab_size")
+		t.Error("Expected editor settings to have tab_size, but it didn't")
 	}
 
 	tab_size := editor.Settings().Get("tab_size").(float64)
 	if tab_size != 4 {
 		t.Errorf("Expected tab_size to equal 4, got: %v", tab_size)
+	}
+}
+
+func TestLoadSettings(t *testing.T) {
+	LIME_USER_PACKAGES_PATH = path.Join("..", "3rdparty", "bundles")
+	LIME_USER_PACKETS_PATH = path.Join("..", "3rdparty", "bundles", "User")
+	LIME_DEFAULTS_PATH = path.Join("packages", "Default")
+
+	editor := GetEditor()
+	editor.loadSettings()
+
+	if editor.Settings().Has("tab_size") != true {
+		t.Error("Expected editor settings to have tab_size, but it didn't")
+	}
+
+	plat := editor.Settings().Parent()
+	switch editor.Platform() {
+	case "windows":
+		if plat.Settings().Get("font_face", "") != "Consolas" {
+			t.Errorf("Expected windows font_face be Consolas, but is %s", plat.Settings().Get("font_face", ""))
+		}
+	case "darwin":
+		if plat.Settings().Get("font_face", "") != "Menlo Regular" {
+			t.Errorf("Expected OSX font_face be Menlo Regular, but is %s", plat.Settings().Get("font_face", ""))
+		}
+	default:
+		if plat.Settings().Get("font_face", "") != "Monospace" {
+			t.Errorf("Expected Linux font_face be Monospace, but is %s", plat.Settings().Get("font_face", ""))
+		}
+	}
+}
+
+func TestInit(t *testing.T) {
+	editor := GetEditor()
+	editor.Init()
+
+	editor.keyBindings.Len()
+	if editor.keyBindings.Len() <= 0 {
+		t.Errorf("Expected editor to have some keys bound, but it didn't")
+	}
+
+	if editor.Settings().Has("tab_size") != true {
+		t.Error("Expected editor settings to have tab_size, but it didn't")
 	}
 }
 
@@ -76,12 +149,12 @@ func TestWatchOnSaveAs(t *testing.T) {
 }
 
 func TestWatchingSettings(t *testing.T) {
-	// TODO: this should be uncomment after adding proper
-	// settings hiererchy
+	// TODO: This won't pass until the settings hierarchy is set up properly.
 	return
+
 	var path string = "testdata/Default.sublime-settings"
 	editor := GetEditor()
-	editor.loadSetting(NewPacket(path))
+	editor.loadSetting(NewPacket(path, editor.Settings()))
 
 	buf, err := ioutil.ReadFile(path)
 	if err != nil {
@@ -101,5 +174,77 @@ func TestWatchingSettings(t *testing.T) {
 	err = ioutil.WriteFile(path, buf, 0644)
 	if err != nil {
 		t.Fatal("Error in writing the default back to setting")
+	}
+}
+
+func TestNewWindow(t *testing.T) {
+	ed := GetEditor()
+	l := len(ed.Windows())
+	_ = ed.NewWindow()
+
+	if len(ed.Windows()) != l+1 {
+		t.Errorf("Expected 1 window, but got %d", len(ed.Windows()))
+	}
+}
+
+func TestRemoveWindow(t *testing.T) {
+	ed := GetEditor()
+	l := len(ed.Windows())
+
+	w := ed.NewWindow()
+	ed.remove(w)
+
+	if len(ed.Windows()) != l {
+		t.Errorf("Expected the window to be removed, but %d still remain", len(ed.Windows()))
+	}
+}
+
+func TestSetActiveWindow(t *testing.T) {
+	ed := GetEditor()
+
+	w1 := ed.NewWindow()
+	w2 := ed.NewWindow()
+
+	if ed.ActiveWindow() != w2 {
+		t.Error("Expected the newest window to be active, but it wasn't")
+	}
+
+	ed.SetActiveWindow(w1)
+
+	if ed.ActiveWindow() != w1 {
+		t.Error("Expected the first window to be active, but it wasn't")
+	}
+}
+
+func TestSetFrontend(t *testing.T) {
+	f := DummyFrontend{}
+
+	ed := GetEditor()
+	ed.SetFrontend(&f)
+
+	if ed.Frontend() != &f {
+		t.Errorf("Expected a DummyFrontend to be set, but got %T", ed.Frontend())
+	}
+}
+
+func TestClipboard(t *testing.T) {
+	ed := GetEditor()
+	s := "test"
+
+	ed.SetClipboard(s)
+
+	if ed.GetClipboard() != s {
+		t.Errorf("Expected %s to be on the clipboard, but got %s", s, ed.GetClipboard())
+	}
+}
+
+func TestHandleInput(t *testing.T) {
+	ed := GetEditor()
+	kp := KeyPress{Key: 'i'}
+
+	ed.HandleInput(kp)
+
+	if ki := <-ed.keyInput; ki != kp {
+		t.Errorf("Expected %s to be on the input buffer, but got %s", kp, ki)
 	}
 }
