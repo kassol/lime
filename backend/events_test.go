@@ -5,23 +5,31 @@
 package backend
 
 import (
-	. "github.com/quarnster/util/text"
+	. "github.com/limetext/text"
 	"os"
 	"reflect"
 	"testing"
 )
 
 func TestOnSelectionModified(t *testing.T) {
-	var (
-		w         Window
-		v         = w.NewFile()
-		res       *RegionSet
-		callCount = 0
-	)
+	var res *RegionSet
+
+	callCount := 0
+
+	w := GetEditor().NewWindow()
+	defer w.Close()
+
+	v := w.NewFile()
+	defer func() {
+		v.SetScratch(true)
+		v.Close()
+	}()
+
 	OnSelectionModified.Add(func(v *View) {
 		res = v.Sel()
 		callCount++
 	})
+
 	edit := v.BeginEdit()
 	v.Insert(edit, 0, "abcd")
 	v.EndEdit(edit)
@@ -55,12 +63,15 @@ func TestOnSelectionModified(t *testing.T) {
 }
 
 func TestOnPreSave(t *testing.T) {
-	var testfile string = "testdata/test_event.txt"
-	var (
-		w         Window
-		v         = w.NewFile()
-		callCount = 0
-	)
+	testfile := "testdata/test_event.txt"
+	callCount := 0
+
+	w := GetEditor().NewWindow()
+	defer w.Close()
+
+	v := w.NewFile()
+	defer v.Close()
+
 	OnPreSave.Add(func(v *View) {
 		callCount++
 	})
@@ -86,12 +97,15 @@ func TestOnPreSave(t *testing.T) {
 }
 
 func TestOnPostSave(t *testing.T) {
-	var testfile string = "testdata/test_event.txt"
-	var (
-		w         Window
-		v         = w.NewFile()
-		callCount = 0
-	)
+	testfile := "testdata/test_event.txt"
+	callCount := 0
+
+	w := GetEditor().NewWindow()
+	defer w.Close()
+
+	v := w.NewFile()
+	defer v.Close()
+
 	OnPostSave.Add(func(v *View) {
 		callCount++
 	})
@@ -104,7 +118,6 @@ func TestOnPostSave(t *testing.T) {
 	if callCount != 1 {
 		t.Fatalf("%d != 1", callCount)
 	}
-	v.Buffer().SetFileName(testfile)
 	if err := v.Save(); err != nil {
 		t.Fatalf("Could not save the view: %s", err)
 	}
@@ -113,5 +126,20 @@ func TestOnPostSave(t *testing.T) {
 	}
 	if err := os.Remove(testfile); err != nil {
 		t.Errorf("Couldn't remove test file %s", testfile)
+	}
+}
+
+func TestOnNewWindow(t *testing.T) {
+	callCount := 0
+
+	OnNewWindow.Add(func(w *Window) {
+		callCount++
+	})
+
+	w := GetEditor().NewWindow()
+	defer w.Close()
+
+	if callCount != 1 {
+		t.Fatalf("%d != 1", callCount)
 	}
 }

@@ -5,10 +5,104 @@
 package render
 
 import (
-	"github.com/quarnster/util/text"
+	"github.com/limetext/text"
 	"reflect"
 	"testing"
 )
+
+func TestViewRegionMapCull(t *testing.T) {
+	tests := []struct {
+		regionsA []text.Region
+		regionsB []text.Region
+		cull     text.Region
+		expA     []text.Region
+		expB     []text.Region
+	}{
+		{
+			[]text.Region{},
+			[]text.Region{},
+			text.Region{},
+			nil,
+			nil,
+		},
+		{
+			[]text.Region{{A: 100, B: 200}},
+			[]text.Region{},
+			text.Region{},
+			nil,
+			nil,
+		},
+		{
+			[]text.Region{},
+			[]text.Region{},
+			text.Region{A: 0, B: 50},
+			nil,
+			nil,
+		},
+		{
+			[]text.Region{{A: 100, B: 200}},
+			[]text.Region{},
+			text.Region{A: 0, B: 50},
+			nil,
+			nil,
+		},
+		{
+			[]text.Region{{A: 100, B: 200}},
+			[]text.Region{{A: 300, B: 400}},
+			text.Region{A: 0, B: 50},
+			nil,
+			nil,
+		},
+		{
+			[]text.Region{{A: 100, B: 200}},
+			[]text.Region{{A: 300, B: 400}},
+			text.Region{A: 0, B: 150},
+			[]text.Region{{A: 100, B: 150}},
+			nil,
+		},
+		{
+			[]text.Region{{A: 100, B: 200}},
+			[]text.Region{{A: 300, B: 400}},
+			text.Region{A: 150, B: 350},
+			[]text.Region{{A: 150, B: 200}},
+			[]text.Region{{A: 300, B: 350}},
+		},
+	}
+
+	for i, test := range tests {
+		vrm := ViewRegionMap{}
+
+		vrA := ViewRegions{}
+		vrA.Regions.AddAll(test.regionsA)
+		vrm["A"] = vrA
+
+		vrB := ViewRegions{}
+		vrB.Regions.AddAll(test.regionsB)
+		vrm["B"] = vrB
+
+		vrm.Cull(test.cull)
+
+		if test.expA != nil {
+			rA := vrA.Regions.Regions()
+
+			if !reflect.DeepEqual(rA, test.expA) {
+				t.Errorf("Test %d: Expected %s, but got %s", i, test.expA, rA)
+			}
+		} else if _, ok := vrm["A"]; ok {
+			t.Errorf("Test %d: Expected %s, but got %v", i, test.expA, vrm["A"])
+		}
+
+		if test.expB != nil {
+			rB := vrB.Regions.Regions()
+
+			if !reflect.DeepEqual(rB, test.expB) {
+				t.Errorf("Test %d: Expected %s, but got %s", i, test.expB, rB)
+			}
+		} else if _, ok := vrm["B"]; ok {
+			t.Errorf("Test %d: Expected %s, but got %v", i, test.expB, vrm["B"])
+		}
+	}
+}
 
 func TestViewRegionsCull(t *testing.T) {
 	tests := []struct {
@@ -17,79 +111,79 @@ func TestViewRegionsCull(t *testing.T) {
 		exp     []text.Region
 	}{
 		{
-			[]text.Region{{100, 200}},
-			text.Region{0, 50},
+			[]text.Region{{A: 100, B: 200}},
+			text.Region{A: 0, B: 50},
 			[]text.Region{},
 		},
 		{
-			[]text.Region{{100, 100}},
-			text.Region{100, 100},
+			[]text.Region{{A: 100, B: 100}},
+			text.Region{A: 100, B: 100},
 			[]text.Region{},
 		},
 		{
-			[]text.Region{{100, 100}},
-			text.Region{95, 105},
+			[]text.Region{{A: 100, B: 100}},
+			text.Region{A: 95, B: 105},
 			[]text.Region{},
 		},
 		{
-			[]text.Region{{100, 100}},
-			text.Region{95, 100},
+			[]text.Region{{A: 100, B: 100}},
+			text.Region{A: 95, B: 100},
 			[]text.Region{},
 		},
 		{
-			[]text.Region{{100, 200}},
-			text.Region{150, 150},
+			[]text.Region{{A: 100, B: 200}},
+			text.Region{A: 150, B: 150},
 			[]text.Region{},
 		},
 		{
-			[]text.Region{{100, 200}},
-			text.Region{90, 100},
+			[]text.Region{{A: 100, B: 200}},
+			text.Region{A: 90, B: 100},
 			[]text.Region{},
 		},
 		{
-			[]text.Region{{100, 200}},
-			text.Region{100, 150},
-			[]text.Region{{100, 150}},
+			[]text.Region{{A: 100, B: 200}},
+			text.Region{A: 100, B: 150},
+			[]text.Region{{A: 100, B: 150}},
 		},
 		{
-			[]text.Region{{100, 200}},
-			text.Region{150, 175},
-			[]text.Region{{150, 175}},
+			[]text.Region{{A: 100, B: 200}},
+			text.Region{A: 150, B: 175},
+			[]text.Region{{A: 150, B: 175}},
 		},
 		{
-			[]text.Region{{100, 200}},
-			text.Region{0, 150},
-			[]text.Region{{100, 150}},
+			[]text.Region{{A: 100, B: 200}},
+			text.Region{A: 0, B: 150},
+			[]text.Region{{A: 100, B: 150}},
 		},
 		{
-			[]text.Region{{100, 200}},
-			text.Region{150, 250},
-			[]text.Region{{150, 200}},
+			[]text.Region{{A: 100, B: 200}},
+			text.Region{A: 150, B: 250},
+			[]text.Region{{A: 150, B: 200}},
 		},
 		{
-			[]text.Region{{100, 200}},
-			text.Region{0, 250},
-			[]text.Region{{100, 200}},
+			[]text.Region{{A: 100, B: 200}},
+			text.Region{A: 0, B: 250},
+			[]text.Region{{A: 100, B: 200}},
 		},
 		{
-			[]text.Region{{100, 200}, {300, 400}},
-			text.Region{0, 500},
-			[]text.Region{{100, 200}, {300, 400}},
+			[]text.Region{{A: 100, B: 200}, {A: 300, B: 400}},
+			text.Region{A: 0, B: 500},
+			[]text.Region{{A: 100, B: 200}, {A: 300, B: 400}},
 		},
 		{
-			[]text.Region{{100, 200}, {300, 400}},
-			text.Region{150, 350},
-			[]text.Region{{150, 200}, {300, 350}},
+			[]text.Region{{A: 100, B: 200}, {A: 300, B: 400}},
+			text.Region{A: 150, B: 350},
+			[]text.Region{{A: 150, B: 200}, {A: 300, B: 350}},
 		},
 		{
-			[]text.Region{{100, 200}, {300, 400}},
-			text.Region{150, 250},
-			[]text.Region{{150, 200}},
+			[]text.Region{{A: 100, B: 200}, {A: 300, B: 400}},
+			text.Region{A: 150, B: 250},
+			[]text.Region{{A: 150, B: 200}},
 		},
 		{
-			[]text.Region{{100, 200}, {300, 400}},
-			text.Region{250, 350},
-			[]text.Region{{300, 350}},
+			[]text.Region{{A: 100, B: 200}, {A: 300, B: 400}},
+			text.Region{A: 250, B: 350},
+			[]text.Region{{A: 300, B: 350}},
 		},
 	}
 
@@ -108,12 +202,12 @@ func TestViewRegionsCull(t *testing.T) {
 }
 
 func TestViewRegionsClone(t *testing.T) {
-	vr := ViewRegions{
+	vr := &ViewRegions{
 		Scope: "testScope",
 		Icon:  "testIcon",
 		Flags: 100,
 	}
-	vr.Regions.AddAll([]text.Region{{0, 0}, {120, 300}, {24, 34}, {45, 40}})
+	vr.Regions.AddAll([]text.Region{{A: 0, B: 0}, {A: 120, B: 300}, {A: 24, B: 34}, {A: 45, B: 40}})
 
 	c := vr.Clone()
 	if !reflect.DeepEqual(c, vr) {

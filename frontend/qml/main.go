@@ -6,17 +6,18 @@ package main
 
 import (
 	"bytes"
-	"code.google.com/p/log4go"
 	"fmt"
-	"github.com/howeyc/fsnotify"
 	"github.com/limetext/gopy/lib"
 	"github.com/limetext/lime/backend"
 	_ "github.com/limetext/lime/backend/commands"
+	"github.com/limetext/lime/backend/keys"
+	"github.com/limetext/lime/backend/log"
 	"github.com/limetext/lime/backend/render"
 	"github.com/limetext/lime/backend/sublime"
 	"github.com/limetext/lime/backend/textmate"
 	"github.com/limetext/lime/backend/util"
-	. "github.com/quarnster/util/text"
+	. "github.com/limetext/text"
+	"gopkg.in/fsnotify.v0"
 	"gopkg.in/qml.v1"
 	"image/color"
 	"io"
@@ -26,32 +27,38 @@ import (
 	"time"
 )
 
+const (
+	qmlMainFile = "main.qml"
+	qmlViewFile = "LimeView.qml"
+)
+
 var (
-	scheme *textmate.Theme
-	blink  bool
+	limeViewComponent qml.Object
+	scheme            *textmate.Theme
+	blink             bool
 
 	// http://qt-project.org/doc/qt-5.1/qtcore/qt.html#Key-enum
-	lut = map[int]backend.Key{
-		0x01000000: backend.Escape,
+	lut = map[int]keys.Key{
+		0x01000000: keys.Escape,
 		0x01000001: '\t',
 		// 0x01000002 // Qt::Key_Backtab
-		0x01000003: backend.Backspace,
-		0x01000004: backend.Enter,
-		0x01000005: backend.KeypadEnter,
-		0x01000006: backend.Insert,
-		0x01000007: backend.Delete,
-		0x01000008: backend.Break,
+		0x01000003: keys.Backspace,
+		0x01000004: keys.Enter,
+		0x01000005: keys.KeypadEnter,
+		0x01000006: keys.Insert,
+		0x01000007: keys.Delete,
+		0x01000008: keys.Break,
 		// 0x01000009 // Qt::Key_Print
 		// 0x0100000a // Qt::Key_SysReq
 		// 0x0100000b // Qt::Key_Clear
-		0x01000010: backend.Home,
-		0x01000011: backend.End,
-		0x01000012: backend.Left,
-		0x01000013: backend.Up,
-		0x01000014: backend.Right,
-		0x01000015: backend.Down,
-		0x01000016: backend.PageUp,
-		0x01000017: backend.PageDown,
+		0x01000010: keys.Home,
+		0x01000011: keys.End,
+		0x01000012: keys.Left,
+		0x01000013: keys.Up,
+		0x01000014: keys.Right,
+		0x01000015: keys.Down,
+		0x01000016: keys.PageUp,
+		0x01000017: keys.PageDown,
 		// 0x01000020 // Qt::Key_Shift
 		// 0x01000021 // Qt::Key_Control On Mac OS X, this corresponds to the Command keys.
 		// 0x01000022 // Qt::Key_Meta On Mac OS X, this corresponds to the Control keys. On Windows keyboards, this key is mapped to the Windows key.
@@ -60,18 +67,18 @@ var (
 		// 0x01000024 // Qt::Key_CapsLock
 		// 0x01000025 // Qt::Key_NumLock
 		// 0x01000026 // Qt::Key_ScrollLock
-		0x01000030: backend.F1,
-		0x01000031: backend.F2,
-		0x01000032: backend.F3,
-		0x01000033: backend.F4,
-		0x01000034: backend.F5,
-		0x01000035: backend.F6,
-		0x01000036: backend.F7,
-		0x01000037: backend.F8,
-		0x01000038: backend.F9,
-		0x01000039: backend.F10,
-		0x0100003a: backend.F11,
-		0x0100003b: backend.F12,
+		0x01000030: keys.F1,
+		0x01000031: keys.F2,
+		0x01000032: keys.F3,
+		0x01000033: keys.F4,
+		0x01000034: keys.F5,
+		0x01000035: keys.F6,
+		0x01000036: keys.F7,
+		0x01000037: keys.F8,
+		0x01000038: keys.F9,
+		0x01000039: keys.F10,
+		0x0100003a: keys.F11,
+		0x0100003b: keys.F12,
 		// 0x01000053 // Qt::Key_Super_L
 		// 0x01000054 // Qt::Key_Super_R
 		// 0x01000055 // Qt::Key_Menu
@@ -251,7 +258,6 @@ type (
 	// the qml.Window
 	frontendWindow struct {
 		bw     *backend.Window
-		Len    int
 		views  []*frontendView
 		window *qml.Window
 	}
@@ -260,7 +266,7 @@ type (
 	// with the qml code that then ends up rendering it.
 	frontendView struct {
 		bv            *backend.View
-		Len           int
+		qv            qml.Object
 		FormattedLine []*lineStruct
 		Title         lineStruct
 	}
@@ -274,6 +280,9 @@ func htmlcol(c render.Colour) string {
 	return fmt.Sprintf("%02X%02X%02X", c.R, c.G, c.B)
 }
 
+// Instantiates a new window, and launches a new goroutine waiting for it
+// to be closed. The WaitGroup is increased at function entry and decreased
+// once the window closes.
 func (fw *frontendWindow) launch(wg *sync.WaitGroup, component qml.Object) {
 	wg.Add(1)
 	fw.window = component.CreateWindow(nil)
@@ -289,13 +298,14 @@ func (fw *frontendWindow) launch(wg *sync.WaitGroup, component qml.Object) {
 func (fw *frontendWindow) View(idx int) *frontendView {
 	return fw.views[idx]
 }
+
 func (fw *frontendWindow) ActiveViewIndex() int {
 	for i, v := range fw.views {
 		if v.bv == fw.bw.ActiveView() {
 			return i
 		}
 	}
-	return len(fw.views)
+	return 0
 }
 func (t *qmlfrontend) Window(w *backend.Window) *frontendWindow {
 	return t.windows[w]
@@ -338,7 +348,7 @@ Item {MessageDialog {
 	engine.Context().SetVar("q", q)
 	component, err := engine.LoadString("dialog.qml", src)
 	if err != nil {
-		log4go.Error("Unable to instanciate dialog: %s", err)
+		log.Errorf("Unable to instanciate dialog: %s", err)
 		return 0
 	}
 	var wg sync.WaitGroup
@@ -356,12 +366,12 @@ Item {MessageDialog {
 
 	wg.Wait()
 	engine.Destroy()
-	log4go.Debug("returning %d", ret)
+	log.Debug("returning %d", ret)
 	return
 }
 
 func (t *qmlfrontend) ErrorMessage(msg string) {
-	log4go.Error(msg)
+	log.Error(msg)
 	var q qmlDialog
 	q.Show(msg, "StandardIcon.Critical")
 }
@@ -376,19 +386,29 @@ func (t *qmlfrontend) OkCancelDialog(msg, ok string) bool {
 	return q.Show(msg, "StandardIcon.Question") == 1
 }
 
-func (t *qmlfrontend) scroll(b Buffer, pos, delta int) {
+func (t *qmlfrontend) scroll(b Buffer) {
 	t.Show(backend.GetEditor().Console(), Region{b.Size(), b.Size()})
+}
+
+func (t *qmlfrontend) Erased(changed_buffer Buffer, region_removed Region, data_removed []rune) {
+	t.scroll(changed_buffer)
+}
+
+func (t *qmlfrontend) Inserted(changed_buffer Buffer, region_inserted Region, data_inserted []rune) {
+	t.scroll(changed_buffer)
 }
 
 func (fv *frontendView) Line(index int) *lineStruct {
 	return fv.FormattedLine[index]
 }
 
-func (fv *frontendView) Lines() int {
+func (fv *frontendView) RegionLines() int {
 	var count int = 0
 	regs := fv.bv.Sel().Regions()
-	for _, r := range regs {
-		count += len(fv.bv.Buffer().Lines(r))
+	if fv.bv.Buffer() != nil {
+		for _, r := range regs {
+			count += len(fv.bv.Buffer().Lines(r))
+		}
 	}
 	return count
 }
@@ -438,18 +458,52 @@ func (t *qmlfrontend) qmlChanged(value, field interface{}) {
 	}
 }
 
+func (fv *frontendView) Fix(obj qml.Object) {
+	fv.qv = obj
+
+	for i := range fv.FormattedLine {
+		_ = i
+		obj.Call("addLine")
+	}
+}
+
 func (fv *frontendView) bufferChanged(buf Buffer, pos, delta int) {
 	prof := util.Prof.Enter("frontendView.bufferChanged")
 	defer prof.Exit()
+
 	row1, _ := buf.RowCol(pos)
 	row2, _ := buf.RowCol(pos + delta)
 	if row1 > row2 {
 		row1, row2 = row2, row1
 	}
 
+	if delta > 0 && fv.qv != nil {
+		r1 := row1
+		if add := strings.Count(buf.Substr(Region{pos, pos + delta}), "\n"); add > 0 {
+			nn := make([]*lineStruct, len(fv.FormattedLine)+add)
+			copy(nn, fv.FormattedLine[:r1])
+			copy(nn[r1+add:], fv.FormattedLine[r1:])
+			for i := 0; i < add; i++ {
+				nn[r1+i] = &lineStruct{Text: ""}
+			}
+			fv.FormattedLine = nn
+			for i := 0; i < add; i++ {
+				fv.qv.Call("insertLine", r1+i)
+			}
+		}
+	}
+
 	for i := row1; i <= row2; i++ {
 		fv.formatLine(i)
 	}
+}
+
+func (fv *frontendView) Erased(changed_buffer Buffer, region_removed Region, data_removed []rune) {
+	fv.bufferChanged(changed_buffer, region_removed.B, region_removed.A-region_removed.B)
+}
+
+func (fv *frontendView) Inserted(changed_buffer Buffer, region_inserted Region, data_inserted []rune) {
+	fv.bufferChanged(changed_buffer, region_inserted.A, region_inserted.B-region_inserted.A)
 }
 
 func (fv *frontendView) formatLine(line int) {
@@ -459,11 +513,11 @@ func (fv *frontendView) formatLine(line int) {
 	vr := fv.bv.Buffer().Line(fv.bv.Buffer().TextPoint(line, 0))
 	for line >= len(fv.FormattedLine) {
 		fv.FormattedLine = append(fv.FormattedLine, &lineStruct{Text: ""})
-		fv.Len = len(fv.FormattedLine)
-		t.qmlChanged(fv, &fv.Len)
+		if fv.qv != nil {
+			fv.qv.Call("addLine")
+		}
 	}
 	if vr.Size() == 0 {
-		// TODO: draw cursor if here
 		if fv.FormattedLine[line].Text != "" {
 			fv.FormattedLine[line].Text = ""
 			t.qmlChanged(fv.FormattedLine[line], fv.FormattedLine[line])
@@ -512,68 +566,95 @@ func (t *qmlfrontend) DefaultFg() color.RGBA {
 	return color.RGBA(c.Foreground)
 }
 
+func (fv *frontendView) onChange(name string) {
+	if name != "lime.syntax.updated" {
+		return
+	}
+	// force redraw, as the syntax regions might have changed...
+	for i := range fv.FormattedLine {
+		fv.formatLine(i)
+	}
+}
+
+// Called when a new view is opened
+func (t *qmlfrontend) onNew(v *backend.View) {
+	fv := &frontendView{bv: v}
+	v.Buffer().AddObserver(fv)
+	v.Settings().AddOnChange("blah", fv.onChange)
+
+	fv.Title.Text = v.Buffer().FileName()
+	if len(fv.Title.Text) == 0 {
+		fv.Title.Text = "untitled"
+	}
+
+	w2 := t.windows[v.Window()]
+	w2.views = append(w2.views, fv)
+
+	tabs := w2.window.ObjectByName("tabs")
+	tab := tabs.Call("addTab", "", limeViewComponent).(qml.Object)
+	try_now := func() {
+		item := tab.Property("item").(qml.Object)
+		if item.Addr() == 0 {
+			// Happens as the item isn't actually loaded until we switch to the tab.
+			// Hence connecting to the loaded signal
+			return
+		}
+		item.Set("myView", fv)
+		item.Set("fontSize", v.Settings().Get("font_size", 12).(float64))
+		item.Set("fontFace", v.Settings().Get("font_face", "Helvetica").(string))
+	}
+	tab.On("loaded", try_now)
+	try_now()
+	tabs.Set("currentIndex", tabs.Property("count").(int)-1)
+}
+
+// called when a view is closed
+func (t *qmlfrontend) onClose(v *backend.View) {
+	w2 := t.windows[v.Window()]
+	for i := range w2.views {
+		if w2.views[i].bv == v {
+			w2.window.ObjectByName("tabs").Call("removeTab", i)
+			copy(w2.views[i:], w2.views[i+1:])
+			w2.views = w2.views[:len(w2.views)-1]
+			return
+		}
+	}
+	log.Error("Couldn't find closed view...")
+}
+
+// called when a view has loaded
+func (t *qmlfrontend) onLoad(v *backend.View) {
+	w2 := t.windows[v.Window()]
+	i := 0
+	for i = range w2.views {
+		if w2.views[i].bv == v {
+			break
+		}
+	}
+	v2 := w2.views[i]
+	v2.Title.Text = v.Buffer().FileName()
+	tabs := w2.window.ObjectByName("tabs")
+	tabs.Set("currentIndex", w2.ActiveViewIndex())
+	tab := tabs.Call("getTab", i).(qml.Object)
+	tab.Set("title", v2.Title.Text)
+}
+
 func (t *qmlfrontend) loop() (err error) {
-
-	backend.OnNew.Add(func(v *backend.View) {
-		fv := &frontendView{bv: v}
-		v.Buffer().AddCallback(fv.bufferChanged)
-		v.Settings().AddOnChange("blah", func(name string) {
-			if name == "lime.syntax.updated" {
-				// force redraw, as the syntax regions might have changed...
-				for i := range fv.FormattedLine {
-					fv.formatLine(i)
-				}
-			}
-		})
-
-		fv.Title.Text = v.Buffer().FileName()
-		if len(fv.Title.Text) == 0 {
-			fv.Title.Text = "untitled"
-		}
-
-		w2 := t.windows[v.Window()]
-		w2.views = append(w2.views, fv)
-		w2.Len = len(w2.views)
-		t.qmlChanged(w2, &w2.Len)
-	})
-
-	backend.OnClose.Add(func(v *backend.View) {
-		w2 := t.windows[v.Window()]
-		for i := range w2.views {
-			if w2.views[i].bv == v {
-				copy(w2.views[i:], w2.views[i+1:])
-				w2.views = w2.views[:len(w2.views)-1]
-				w2.Len = len(w2.views)
-				t.qmlChanged(w2, &w2.Len)
-				return
-			}
-		}
-		log4go.Error("Couldn't find closed view...")
-	})
-
-	backend.OnLoad.Add(func(v *backend.View) {
-		w2 := t.windows[v.Window()]
-		i := 0
-		for i, _ = range w2.views {
-			if w2.views[i].bv == v {
-				break
-			}
-		}
-		v2 := w2.views[i]
-		v2.Title.Text = v.Buffer().FileName()
-		t.qmlChanged(v2, &v2.Title)
-	})
+	backend.OnNew.Add(t.onNew)
+	backend.OnClose.Add(t.onClose)
+	backend.OnLoad.Add(t.onLoad)
 
 	ed := backend.GetEditor()
+	ed.Init()
+	go sublime.Init()
 	ed.SetFrontend(t)
 	ed.LogInput(false)
 	ed.LogCommands(false)
 	c := ed.Console()
 	t.Console = &frontendView{bv: c}
-	c.Buffer().AddCallback(t.Console.bufferChanged)
-	c.Buffer().AddCallback(t.scroll)
+	c.Buffer().AddObserver(t.Console)
+	c.Buffer().AddObserver(t)
 
-	const qmlMainFile = "main.qml"
 	var (
 		engine    *qml.Engine
 		component qml.Object
@@ -589,24 +670,28 @@ func (t *qmlfrontend) loop() (err error) {
 	// the old file would still be what is referenced.
 	newEngine := func() (err error) {
 		if engine != nil {
-			log4go.Debug("calling destroy")
+			log.Debug("calling destroy")
 			// TODO(.): calling this appears to make the editor *very* crash-prone, just let it leak for now
 			// engine.Destroy()
 			engine = nil
 		}
-		log4go.Debug("calling newEngine")
+		log.Debug("calling newEngine")
 		engine = qml.NewEngine()
-		log4go.Debug("setvar frontend")
+		log.Debug("setvar frontend")
 		engine.Context().SetVar("frontend", t)
-		log4go.Debug("setvar editor")
+		log.Debug("setvar editor")
 		engine.Context().SetVar("editor", backend.GetEditor())
 
-		log4go.Debug("loadfile")
+		log.Debug("loadfile")
 		component, err = engine.LoadFile(qmlMainFile)
+		if err != nil {
+			return err
+		}
+		limeViewComponent, err = engine.LoadFile(qmlViewFile)
 		return
 	}
 	if err := newEngine(); err != nil {
-		log4go.Error(err)
+		log.Error(err)
 	}
 
 	backend.OnNewWindow.Add(func(w *backend.Window) {
@@ -618,8 +703,8 @@ func (t *qmlfrontend) loop() (err error) {
 	})
 
 	// TODO: should be done backend side
-	if sc, err := textmate.LoadTheme("../../3rdparty/bundles/TextMate-Themes/Monokai.tmTheme"); err != nil {
-		log4go.Error(err)
+	if sc, err := textmate.LoadTheme("../../packages/themes/TextMate-Themes/Monokai.tmTheme"); err != nil {
+		log.Error(err)
 	} else {
 		scheme = sc
 	}
@@ -631,17 +716,14 @@ func (t *qmlfrontend) loop() (err error) {
 	w := ed.NewWindow()
 	v := w.OpenFile("main.go", 0)
 	// TODO: should be done backend side
-	v.Settings().Set("syntax", "../../3rdparty/bundles/go.tmbundle/Syntaxes/Go.tmLanguage")
+	v.Settings().Set("syntax", "../../packages/go.tmbundle/Syntaxes/Go.tmLanguage")
 	v = w.OpenFile("../../backend/editor.go", 0)
 	// TODO: should be done backend side
-	v.Settings().Set("syntax", "../../3rdparty/bundles/go.tmbundle/Syntaxes/Go.tmLanguage")
-
-	ed.Init()
-	sublime.Init()
+	v.Settings().Set("syntax", "../../packages/go.tmbundle/Syntaxes/Go.tmLanguage")
 
 	watch, err := fsnotify.NewWatcher()
 	if err != nil {
-		log4go.Error("Unable to create file watcher: %s", err)
+		log.Errorf("Unable to create file watcher: %s", err)
 		return
 	}
 	defer watch.Close()
@@ -674,11 +756,11 @@ func (t *qmlfrontend) loop() (err error) {
 		// Reset reload status
 		reloadRequested = false
 
-		log4go.Debug("Waiting for all windows to close")
+		log.Debug("Waiting for all windows to close")
 		// wg would be the WaitGroup all windows belong to, so first we wait for
 		// all windows to close.
 		wg.Wait()
-		log4go.Debug("All windows closed. reloadRequest: %v", reloadRequested)
+		log.Debug("All windows closed. reloadRequest: %v", reloadRequested)
 		// then we check if there's a reload request in the pipe
 		if !reloadRequested || len(t.windows) == 0 {
 			// This would be a genuine exit; all windows closed by the user
@@ -688,11 +770,11 @@ func (t *qmlfrontend) loop() (err error) {
 		// *We* closed all windows because we want to reload freshly changed qml
 		// files.
 		for {
-			log4go.Debug("Calling newEngine")
+			log.Debug("Calling newEngine")
 			if err := newEngine(); err != nil {
 				// Reset reload status
 				reloadRequested = false
-				log4go.Error(err)
+				log.Error(err)
 				for !reloadRequested {
 					// This loop allows us to re-try reloading
 					// if there was an error in the file this time,
@@ -702,10 +784,10 @@ func (t *qmlfrontend) loop() (err error) {
 				}
 				continue
 			}
-			log4go.Debug("break")
+			log.Debug("break")
 			break
 		}
-		log4go.Debug("re-launching all windows")
+		log.Debug("re-launching all windows")
 		// Succeeded loading the file, re-launch all windows
 		for _, v := range t.windows {
 			v.launch(&wg, component)
@@ -717,12 +799,16 @@ func (t *qmlfrontend) loop() (err error) {
 // Launches the provided command in a new goroutine
 // (to avoid locking up the GUI)
 func (t *qmlfrontend) RunCommand(command string) {
+	t.RunCommandWithArgs(command, make(backend.Args))
+}
+
+func (t *qmlfrontend) RunCommandWithArgs(command string, args backend.Args) {
 	ed := backend.GetEditor()
-	go ed.RunCommand(command, make(backend.Args))
+	go ed.RunCommand(command, args)
 }
 
 func (t *qmlfrontend) HandleInput(keycode int, modifiers int) bool {
-	log4go.Debug("qmlfrontend.HandleInput: key=%x, modifiers=%x", keycode, modifiers)
+	log.Debug("qmlfrontend.HandleInput: key=%x, modifiers=%x", keycode, modifiers)
 	shift := false
 	alt := false
 	ctrl := false
@@ -752,7 +838,7 @@ func (t *qmlfrontend) HandleInput(keycode int, modifiers int) bool {
 			}
 		}
 
-		ed.HandleInput(backend.KeyPress{Key: key, Shift: shift, Alt: alt, Ctrl: ctrl, Super: super})
+		ed.HandleInput(keys.KeyPress{Key: key, Shift: shift, Alt: alt, Ctrl: ctrl, Super: super})
 		return true
 	}
 	return false
@@ -762,7 +848,7 @@ func main() {
 	// Need to lock the OS thread as OSX GUI requires GUI stuff to run in the main thread
 	runtime.LockOSThread()
 
-	log4go.AddFilter("file", log4go.FINEST, log4go.NewConsoleLogWriter())
+	log.AddFilter("file", log.FINEST, log.NewConsoleLogWriter())
 	defer func() {
 		py.NewLock()
 		py.Finalize()

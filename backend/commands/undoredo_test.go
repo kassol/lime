@@ -6,16 +6,22 @@ package commands
 
 import (
 	. "github.com/limetext/lime/backend"
-	. "github.com/quarnster/util/text"
+	. "github.com/limetext/text"
 	"testing"
 )
 
 func TestUndoRedoCommands(t *testing.T) {
-	ch := GetEditor().CommandHandler()
-	var (
-		w Window
-		v = w.NewFile()
-	)
+	ed := GetEditor()
+	ch := ed.CommandHandler()
+	w := ed.NewWindow()
+	defer w.Close()
+
+	v := w.NewFile()
+	defer func() {
+		v.SetScratch(true)
+		v.Close()
+	}()
+
 	edit := v.BeginEdit()
 	v.Insert(edit, 0, "abcd")
 	v.EndEdit(edit)

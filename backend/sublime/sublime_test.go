@@ -6,13 +6,14 @@ package sublime
 
 import (
 	"bytes"
-	"code.google.com/p/log4go"
 	"fmt"
 	"github.com/limetext/gopy/lib"
 	"github.com/limetext/lime/backend"
 	_ "github.com/limetext/lime/backend/commands"
+	"github.com/limetext/lime/backend/log"
+	"github.com/limetext/lime/backend/packages"
 	"github.com/limetext/lime/backend/util"
-	"github.com/quarnster/util/text"
+	"github.com/limetext/text"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -21,11 +22,31 @@ import (
 	"time"
 )
 
+var dummyClipboard string
+
+type consoleObserver struct {
+	T *testing.T
+}
+
+func (o *consoleObserver) Erased(changed_buffer text.Buffer, region_removed text.Region, data_removed []rune) {
+	// do nothing
+}
+
+func (o *consoleObserver) Inserted(changed_buffer text.Buffer, region_inserted text.Region, data_inserted []rune) {
+	o.T.Logf("%s", string(data_inserted))
+}
+
 func TestSublime(t *testing.T) {
 	ed := backend.GetEditor()
-	ed.Console().Buffer().AddCallback(func(b text.Buffer, pos, delta int) {
-		t.Logf("%s", b.Substr(text.Region{pos, pos + delta}))
+	ed.SetClipboardFuncs(func(n string) (err error) {
+		dummyClipboard = n
+		return nil
+	}, func() (string, error) {
+		return dummyClipboard, nil
 	})
+	ed.Init()
+
+	ed.Console().Buffer().AddObserver(&consoleObserver{T: t})
 	w := ed.NewWindow()
 	Init()
 	l := py.NewLock()
@@ -34,9 +55,9 @@ func TestSublime(t *testing.T) {
 	if m, err := py.Import("sublime_plugin"); err != nil {
 		t.Fatal(err)
 	} else {
-		plugins := backend.ScanPlugins("testdata/", ".py")
+		plugins := packages.ScanPlugins("testdata/", ".py")
 		for _, p := range plugins {
-			loadPlugin(p, m)
+			newPlugin(p, m)
 		}
 	}
 
@@ -52,24 +73,6 @@ func TestSublime(t *testing.T) {
 		subl.AddObject("test_window", w)
 	}
 
-	if dir, err := os.Open("testdata"); err != nil {
-		t.Error(err)
-	} else if files, err := dir.Readdirnames(0); err != nil {
-		t.Error(err)
-	} else {
-		for _, fn := range files {
-			if filepath.Ext(fn) == ".py" {
-				log4go.Debug("Running %s", fn)
-				if _, err := py.Import(fn[:len(fn)-3]); err != nil {
-					log4go.Error(err)
-					t.Error(err)
-				} else {
-					log4go.Debug("Ran %s", fn)
-				}
-			}
-		}
-	}
-
 	// Testing plugin reload
 	data := []byte(`import sublime, sublime_plugin
 
@@ -79,34 +82,28 @@ class TestToxt(sublime_plugin.TextCommand):
         self.view.insert(edit, 0, "Tada")
 		`)
 	if err := ioutil.WriteFile("testdata/plugins/reload.py", data, 0644); err != nil {
-		t.Fatalf("Couldn't write file: %s", err)
+		t.Fatalf("Couldn't write testdata/plugins/reload.py: %s", err)
 	}
-	data = []byte(`try:
-    import traceback
-    import sublime
-    print("new file")
-    v = sublime.test_window.new_file()
-    print("running command")
-    v.run_command("test_toxt")
-    print("command ran")
-    assert v.substr(sublime.Region(0, v.size())) == "Tada"
-except:
-    traceback.print_exc()
-    raise
-		`)
-	time.Sleep(time.Millisecond * 10)
-	if err := ioutil.WriteFile("testdata/reload_test.py", data, 0644); err != nil {
-		t.Fatalf("Couldn't write file: %s", err)
-	}
-	log4go.Debug("Running %s", "reload_test.py")
-	if _, err := py.Import("reload_test"); err != nil {
-		log4go.Error(err)
+	defer os.Remove("testdata/plugins/reload.py")
+	time.Sleep(time.Millisecond * 50)
+
+	if dir, err := os.Open("testdata"); err != nil {
+		t.Error(err)
+	} else if files, err := dir.Readdirnames(0); err != nil {
 		t.Error(err)
 	} else {
-		log4go.Debug("Ran %s", "reload_test.py")
+		for _, fn := range files {
+			if filepath.Ext(fn) == ".py" {
+				log.Debug("Running %s", fn)
+				if _, err := py.Import(fn[:len(fn)-3]); err != nil {
+					log.Error(err)
+					t.Error(err)
+				} else {
+					log.Debug("Ran %s", fn)
+				}
+			}
+		}
 	}
-	os.Remove("testdata/plugins/reload.py")
-	os.Remove("testdata/reload_test.py")
 
 	var f func(indent string, v py.Object, buf *bytes.Buffer)
 	f = func(indent string, v py.Object, buf *bytes.Buffer) {
@@ -176,7 +173,7 @@ except:
 			if strings.HasSuffix(v.Buffer().FileName(), "sample.txt") {
 				continue
 			}
-			if strings.Index(v.Buffer().Substr(text.Region{0, v.Buffer().Size()}), "FAILED") != -1 {
+			if strings.Index(v.Buffer().Substr(text.Region{A: 0, B: v.Buffer().Size()}), "FAILED") != -1 {
 				t.Error(v.Buffer())
 			}
 		}

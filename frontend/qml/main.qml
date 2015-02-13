@@ -5,13 +5,19 @@ import QtQuick.Dialogs 1.0
 import QtQuick.Layouts 1.0
 import QtGraphicalEffects 1.0
 
+import "dialogs"
+
 ApplicationWindow {
     id: window
     width: 800
     height: 600
+    title: "Lime"
 
     property var myWindow
-    property bool ctrl
+
+    function view() {
+       return tabs.getTab(tabs.currentIndex).item;
+    }
 
     menuBar: MenuBar {
         id: menu
@@ -25,7 +31,7 @@ ApplicationWindow {
             MenuItem {
                 text: qsTr("&Open File...")
                 shortcut: "Ctrl+O"
-                onTriggered: frontend.runCommand("open_file");
+                onTriggered: openDialog.open();
             }
             MenuItem {
                 text: qsTr("&Save")
@@ -37,6 +43,10 @@ ApplicationWindow {
                 shortcut: "Shift+Ctrl+S"
                 // TODO(.) : qml doesn't have a ready dialog like FileDialog
                 // onTriggered: saveAsDialog.open()
+            }
+            MenuItem {
+                text: qsTr("&Save All")
+                onTriggered: frontend.runCommand("save_all")
             }
             MenuSeparator{}
             MenuItem {
@@ -53,7 +63,7 @@ ApplicationWindow {
             MenuItem {
                 text: qsTr("&Close File")
                 shortcut: "Ctrl+W"
-                onTriggered: frontend.runCommand("close");
+                onTriggered: frontend.runCommand("close_view");
             }
             MenuItem {
                 text: qsTr("&Close All Files")
@@ -66,13 +76,67 @@ ApplicationWindow {
                 onTriggered: Qt.quit(); // frontend.runCommand("quit");
             }
         }
+        Menu {
+            title: qsTr("&Edit")
+            MenuItem {
+                text: qsTr("&Undo")
+                shortcut: "Ctrl+Z"
+                onTriggered: frontend.runCommand("undo");
+            }
+            MenuItem {
+                text: qsTr("&Redo")
+                shortcut: "Ctrl+Y"
+                onTriggered: frontend.runCommand("redo");
+            }
+            Menu {
+                title: qsTr("&Undo Selection")
+                MenuItem {
+                    text: qsTr("&Soft Undo")
+                    shortcut: "Ctrl+U"
+                    onTriggered: frontend.runCommand("soft_undo");
+                }
+                MenuItem {
+                    text: qsTr("&Soft Redo")
+                    shortcut: "Shift+Ctrl+U"
+                    onTriggered: frontend.runCommand("soft_redo");
+                }
+            }
+            MenuSeparator{}
+            MenuItem {
+                text: qsTr("&Copy")
+                shortcut: "Ctrl+C"
+                onTriggered: frontend.runCommand("copy");
+            }
+            MenuItem {
+                text: qsTr("&Cut")
+                shortcut: "Ctrl+X"
+                onTriggered: frontend.runCommand("cut");
+            }
+            MenuItem {
+                text: qsTr("&Paste")
+                shortcut: "Ctrl+V"
+                onTriggered: frontend.runCommand("paste");
+            }
+        }
+        Menu {
+            title: qsTr("&View")
+            MenuItem {
+                text: qsTr("Sh&ow/Hide Console")
+                shortcut: "Ctrl+`"
+                onTriggered: if (consoleView.visible == true) { consoleView.visible=false } else { consoleView.visible=true }
+            }
+            MenuItem {
+                text: qsTr("Sh&ow/Hide Statusbar")
+                onTriggered: if (statusBar.visible == true) { statusBar.visible=false } else { statusBar.visible=true }
+            }
+        }
     }
 
     statusBar: StatusBar {
         id: statusBar
         style: StatusBarStyle {
             background: Image {
-               source: "../../3rdparty/bundles/themes/soda/Soda Dark/status-bar-background.png"
+               source: "../../packages/themes/soda/Soda Dark/status-bar-background.png"
             }
         }
 
@@ -123,11 +187,11 @@ ApplicationWindow {
     Item {
         anchors.fill: parent
         Keys.onPressed: {
-            ctrl = (event.modifiers && Qt.ControlModifier) ? true : false;
+            view().ctrl = (event.key == Qt.Key_Control) ? true : false;
             event.accepted = frontend.handleInput(event.key, event.modifiers)
         }
         Keys.onReleased: {
-            ctrl = false;
+            view().ctrl = (event.key == Qt.Key_Control) ? false : view().ctrl;
         }
         focus: true // Focus required for Keys.onPressed
         SplitView {
@@ -139,6 +203,7 @@ ApplicationWindow {
                     Layout.fillHeight: true
                     Layout.fillWidth: true
                     id: tabs
+                    objectName: "tabs"
                     style: TabViewStyle {
                         frameOverlap: 0
                         tab: Item {
@@ -152,7 +217,7 @@ ApplicationWindow {
                                 text: styleData.title
                             }
                             BorderImage {
-                                source: styleData.selected ? "../../3rdparty/bundles/themes/soda/Soda Dark/tab-active.png" : "../../3rdparty/bundles/themes/soda/Soda Dark/tab-inactive.png"
+                                source: styleData.selected ? "../../packages/themes/soda/Soda Dark/tab-active.png" : "../../packages/themes/soda/Soda Dark/tab-inactive.png"
                                 border { left: 5; top: 5; right: 5; bottom: 5 }
                                 width: 180
                                 height: 25
@@ -167,57 +232,24 @@ ApplicationWindow {
                         }
                         tabBar: Image {
                             fillMode: Image.TileHorizontally
-                            source: "../../3rdparty/bundles/themes/soda/Soda Dark/tabset-background.png"
+                            source: "../../packages/themes/soda/Soda Dark/tabset-background.png"
                         }
                         tabsMovable: true
                         frame: Rectangle { color: frontend.defaultBg() }
                         tabOverlap: 5
                     }
-                    Repeater {
-                        id: rpmod
-                        function tmp() {
-                            var ret = myWindow ? myWindow.len : 0;
-                            console.log(ret);
-                            return ret;
-                        }
-                        model: tmp()
-                        delegate: Tab {
-                            title: myWindow.view(index).title.text
-                            LimeView {
-                                id: view
-                                myView: myWindow.view(index)
-                                Timer {
-                                    // TODO(.): Why is view null sometimes?
-                                    //          Is it just a variant of https://github.com/go-qml/qml/issues/68?
-                                    interval: 100
-                                    running: view.myView == null
-                                    repeat: true
-                                    onTriggered: {
-                                        view.myView = myWindow.view(index);
-                                        if (index == tabs.currentIndex) {
-                                            tabs.resetminimap();
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        onItemAdded: {
-                            if (myWindow.activeViewIndex() < tabs.count)
-                                tabs.currentIndex = myWindow.activeViewIndex()
-                        }
-                    }
                     function resetminimap() {
-                        // TODO(.): This is conflicts on new file on new file the
-                        //          active_view should be the new file but it changes to first tab
-                        myWindow.back().setActiveView(myWindow.view(currentIndex).back());
-
+                        var rv = view().children[1];
+                        minimap.myView = null;
+                        minimap.children[1].model = rv.model.count;
                         minimap.myView = myWindow.view(currentIndex);
-                        minimap.realView = tabs.getTab(currentIndex).item.children[1];
+                        minimap.realView = rv;
                     }
                     Component.onCompleted: {
                         resetminimap();
                     }
                     onCurrentIndexChanged: {
+                        myWindow.back().setActiveView(myWindow.view(currentIndex).back());
                         resetminimap();
                     }
                 }
@@ -278,40 +310,13 @@ ApplicationWindow {
             }
             LimeView {
                 id: consoleView
+                visible: false
                 myView: frontend.console
-                Timer {
-                    // TODO(.): Why is view null sometimes?
-                    //          Is it just a variant of https://github.com/go-qml/qml/issues/68?
-                    interval: 100
-                    running: consoleView.myView == null
-                    repeat: true
-                    onTriggered: {
-                        consoleView.myView = myWindow.view(index);
-                    }
-                }
-
                 height: 100
             }
         }
     }
-
-    FileDialog {
+    OpenDialog {
         id: openDialog
-        title: qsTr("Open File")
-        // TODO(.) : folder should be set to current view directory
-        // folder: myWindow.view(tabs.currentIndex).title.text
-        // TODO(.) : Selecting multiple files should be enabled
-        // selectMultiple: true
-        onAccepted: {
-            var _url = openDialog.fileUrl.toString()
-            if(_url.length >= 7 && _url.slice(0, 7) == "file://") {
-                _url = _url.slice(7)
-            }
-            console.log("Choosed: " + _url);
-            myWindow.back().openFile(_url, 0);
-        }
-        onRejected: {
-            console.log("Canceled.")
-        }
     }
 }

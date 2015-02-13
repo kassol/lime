@@ -5,9 +5,10 @@
 package backend
 
 import (
-	"code.google.com/p/log4go"
-	"github.com/quarnster/util/text"
+	"github.com/limetext/lime/backend/log"
+	"github.com/limetext/text"
 	"io/ioutil"
+	"path/filepath"
 	"runtime/debug"
 	"sync"
 )
@@ -30,7 +31,9 @@ func (w *Window) NewFile() *View {
 	v.Settings().SetParent(w)
 	v.setBuffer(text.NewBuffer())
 	v.selection.Clear()
-	v.selection.Add(text.Region{0, 0})
+	v.selection.Add(text.Region{A: 0, B: 0})
+	v.Settings().Set("lime.last_save_change_count", v.buffer.ChangeCount())
+
 	OnNew.Call(v)
 	w.SetActiveView(v)
 
@@ -58,7 +61,7 @@ func (w *Window) remove(v *View) {
 			return
 		}
 	}
-	log4go.Error("Wanted to remove view %+v, but it doesn't appear to be a child of this window", v)
+	log.Errorf("Wanted to remove view %+v, but it doesn't appear to be a child of this window", v)
 }
 
 func (w *Window) OpenFile(filename string, flags int) *View {
@@ -66,25 +69,29 @@ func (w *Window) OpenFile(filename string, flags int) *View {
 
 	v.SetScratch(true)
 	e := v.BeginEdit()
-	v.Buffer().SetFileName(filename)
+	if fn, err := filepath.Abs(filename); err != nil {
+		v.Buffer().SetFileName(filename)
+	} else {
+		v.Buffer().SetFileName(fn)
+	}
 	if d, err := ioutil.ReadFile(filename); err != nil {
-		log4go.Error("Couldn't load file %s: %s", filename, err)
+		log.Errorf("Couldn't load file %s: %s", filename, err)
 	} else {
 		v.Insert(e, 0, string(d))
 	}
 	v.EndEdit(e)
 	v.selection.Clear()
-	v.selection.Add(text.Region{0, 0})
+	v.selection.Add(text.Region{A: 0, B: 0})
+	v.Settings().Set("lime.last_save_change_count", v.buffer.ChangeCount())
 	v.SetScratch(false)
+
 	OnLoad.Call(v)
+	w.SetActiveView(v)
 
 	return v
 }
 
 func (w *Window) SetActiveView(v *View) {
-	// w.lock.Lock()
-	// defer w.lock.Unlock()
-
 	if w.active_view != nil {
 		OnDeactivated.Call(w.active_view)
 	}
@@ -98,22 +105,33 @@ func (w *Window) ActiveView() *View {
 	return w.active_view
 }
 
-func (w *Window) Close() {
-	w.CloseAllViews()
-	ed := GetEditor()
-	ed.remove(w)
+// Closes the Window and all its Views.
+// Returns "true" if the Window closed successfully. Otherwise returns "false".
+func (w *Window) Close() bool {
+	if !w.CloseAllViews() {
+		return false
+	}
+	GetEditor().remove(w)
+
+	return true
 }
 
-func (w *Window) CloseAllViews() {
-	for _, v := range w.views {
-		v.Close()
+// Closes all of the Window's Views.
+// Returns "true" if all the Views closed successfully. Otherwise returns "false".
+func (w *Window) CloseAllViews() bool {
+	for len(w.views) > 0 {
+		if !w.views[0].Close() {
+			return false
+		}
 	}
+
+	return true
 }
 
 func (w *Window) runCommand(c WindowCommand, name string) error {
 	defer func() {
 		if r := recover(); r != nil {
-			log4go.Error("Paniced while running window command %s %v: %v\n%s", name, c, r, string(debug.Stack()))
+			log.Errorf("Paniced while running window command %s %v: %v\n%s", name, c, r, string(debug.Stack()))
 		}
 	}()
 	return c.Run(w)

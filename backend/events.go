@@ -5,7 +5,8 @@
 package backend
 
 import (
-	"code.google.com/p/log4go"
+	"github.com/limetext/lime/backend/log"
+	"github.com/limetext/lime/backend/util"
 	"strings"
 )
 
@@ -31,7 +32,7 @@ type (
 	// For instance pressing the key 'j' will have a different meaning when in a VI command mode emulation
 	// and when in a VI insert mode emulation. A plugin would then define two key binding entries for 'j',
 	// describe the key binding context to be able to discern which action is appropriate when 'j' is then pressed.
-	QueryContextCallback func(v *View, key string, operator Op, operand interface{}, match_all bool) QueryContextReturn
+	QueryContextCallback func(v *View, key string, operator util.Op, operand interface{}, match_all bool) QueryContextReturn
 
 	// A QueryContextEvent is simply a bunch of QueryContextCallbacks.
 	QueryContextEvent []QueryContextCallback
@@ -56,7 +57,7 @@ func (ve *ViewEvent) Add(cb ViewEventCallback) {
 
 // Trigger this ViewEvent by calling all the registered callbacks in order of registration.
 func (ve *ViewEvent) Call(v *View) {
-	log4go.Finest("%s(%v)", evNames[ve], v.Id())
+	log.Finest("%s(%v)", evNames[ve], v.Id())
 	for _, ev := range *ve {
 		ev(v)
 	}
@@ -70,15 +71,15 @@ func (qe *QueryContextEvent) Add(cb QueryContextCallback) {
 
 // Searches for a QueryContextCallback and returns the result of the first callback being able to deal with this
 // context, or Unknown if no such callback was found.
-func (qe QueryContextEvent) Call(v *View, key string, operator Op, operand interface{}, match_all bool) QueryContextReturn {
-	log4go.Fine("Query context: %s, %v, %v, %v", key, operator, operand, match_all)
+func (qe QueryContextEvent) Call(v *View, key string, operator util.Op, operand interface{}, match_all bool) QueryContextReturn {
+	log.Fine("Query context: %s, %v, %v, %v", key, operator, operand, match_all)
 	for i := range qe {
 		r := qe[i](v, key, operator, operand, match_all)
 		if r != Unknown {
 			return r
 		}
 	}
-	log4go.Fine("Unknown context: %s", key)
+	log.Fine("Unknown context: %s", key)
 	return Unknown
 }
 
@@ -90,7 +91,7 @@ func (we *WindowEvent) Add(cb WindowEventCallback) {
 
 // Trigger this WindowEvent by calling all the registered callbacks in order of registration.
 func (we *WindowEvent) Call(w *Window) {
-	log4go.Finest("%s(%v)", wevNames[we], w.Id())
+	log.Finest("%s(%v)", wevNames[we], w.Id())
 	for _, ev := range *we {
 		ev(w)
 	}
@@ -132,8 +133,8 @@ var (
 
 func init() {
 	// Register functionality dealing with a couple of built in contexts
-	OnQueryContext.Add(func(v *View, key string, operator Op, operand interface{}, match_all bool) QueryContextReturn {
-		if strings.HasPrefix(key, "setting.") && operator == OpEqual {
+	OnQueryContext.Add(func(v *View, key string, operator util.Op, operand interface{}, match_all bool) QueryContextReturn {
+		if strings.HasPrefix(key, "setting.") && operator == util.OpEqual {
 			c, ok := v.Settings().Get(key[8:]).(bool)
 			if c && ok {
 				return True
@@ -144,12 +145,12 @@ func init() {
 			op := int(opf)
 
 			switch operator {
-			case OpEqual:
+			case util.OpEqual:
 				if op == v.Sel().Len() {
 					return True
 				}
 				return False
-			case OpNotEqual:
+			case util.OpNotEqual:
 				if op != v.Sel().Len() {
 					return True
 				}
@@ -159,8 +160,7 @@ func init() {
 		return Unknown
 	})
 
-	OnLoad.Add(func(view *View) {
-		editor := GetEditor()
-		editor.Watch(NewWatchedUserFile(view))
+	OnLoad.Add(func(v *View) {
+		GetEditor().Watch(v.Buffer().FileName(), v)
 	})
 }

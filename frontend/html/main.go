@@ -5,28 +5,40 @@
 package main
 
 import (
-	"code.google.com/p/log4go"
+	"bufio"
+	"bytes"
+	"flag"
 	"fmt"
 	"github.com/limetext/gopy/lib"
 	"github.com/limetext/lime/backend"
 	_ "github.com/limetext/lime/backend/commands"
+	"github.com/limetext/lime/backend/keys"
+	"github.com/limetext/lime/backend/log"
 	"github.com/limetext/lime/backend/render"
 	"github.com/limetext/lime/backend/sublime"
 	"github.com/limetext/lime/backend/textmate"
 	"github.com/limetext/lime/backend/util"
-	. "github.com/quarnster/util/text"
+	. "github.com/limetext/text"
+	"golang.org/x/net/websocket"
 	"io"
+	"io/ioutil"
 	"net/http"
+	"net/url"
+	"os"
+	"path"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 var (
 	scheme *textmate.Theme
 	blink  bool
+	port   = flag.Int("port", 8080, "Configures which port to host lime on")
 )
 
 const (
@@ -46,6 +58,14 @@ type tbfe struct {
 	dorender       chan bool
 	lock           sync.Mutex
 	dirty          bool
+}
+
+func (t *tbfe) Erased(changed_buffer Buffer, region_removed Region, data_removed []rune) {
+	t.scroll(changed_buffer)
+}
+
+func (t *tbfe) Inserted(changed_buffer Buffer, region_inserted Region, data_inserted []rune) {
+	t.scroll(changed_buffer)
 }
 
 func htmlcol(c render.Colour) string {
@@ -150,24 +170,32 @@ func (t *tbfe) StatusMessage(msg string) {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 	t.status_message = msg
+
+	t.BroadcastData(map[string]interface{}{"type": "statusMessage", "msg": msg})
 }
 
 func (t *tbfe) ErrorMessage(msg string) {
-	log4go.Error(msg)
+	log.Error(msg)
+
+	t.BroadcastData(map[string]interface{}{"type": "errorMessage", "msg": msg})
 }
 
-// TODO(q): Actually show a dialog
 func (t *tbfe) MessageDialog(msg string) {
-	log4go.Info(msg)
+	log.Info(msg)
+
+	t.BroadcastData(map[string]interface{}{"type": "messageDialog", "msg": msg})
 }
 
-// TODO(q): Actually show a dialog
+// TODO: wait for client response, return true/false
 func (t *tbfe) OkCancelDialog(msg, ok string) bool {
-	log4go.Info(msg, ok)
+	log.Info(msg, ok)
+
+	t.BroadcastData(map[string]interface{}{"type": "okCancelDialog", "msg": msg, "ok": ok})
+
 	return false
 }
 
-func (t *tbfe) scroll(b Buffer, pos, delta int) {
+func (t *tbfe) scroll(b Buffer) {
 	t.Show(backend.GetEditor().Console(), Region{b.Size(), b.Size()})
 }
 
@@ -176,7 +204,7 @@ var pc = 0
 func (t *tbfe) render(w io.Writer) {
 	defer func() {
 		if r := recover(); r != nil {
-			log4go.Error("Panic in renderthread: %v\n%s", r, string(debug.Stack()))
+			log.Errorf("Panic in renderthread: %v\n%s", r, string(debug.Stack()))
 			if pc > 1 {
 				panic(r)
 			}
@@ -195,9 +223,9 @@ func (t *tbfe) render(w io.Writer) {
 	//	runes := []rune(t.status_message)
 }
 func (t *tbfe) key(w http.ResponseWriter, req *http.Request) {
-	log4go.Debug("key: %s", req)
+	log.Debug("key: %s", req)
 	kc := req.FormValue("keyCode")
-	var kp backend.KeyPress
+	var kp keys.KeyPress
 	v, _ := strconv.ParseInt(kc, 10, 32)
 
 	if req.FormValue("altKey") == "true" {
@@ -215,12 +243,12 @@ func (t *tbfe) key(w http.ResponseWriter, req *http.Request) {
 	if !kp.Shift {
 		v = int64(unicode.ToLower(rune(v)))
 	}
-	kp.Key = backend.Key(v)
+	kp.Key = keys.Key(v)
 	backend.GetEditor().HandleInput(kp)
 }
 
 func (t *tbfe) view(w http.ResponseWriter, req *http.Request) {
-	log4go.Debug("view: %s", req)
+	log.Debug("view: %s", req)
 	if t.dirty {
 		t.dirty = false
 		t.render(w)
@@ -229,58 +257,207 @@ func (t *tbfe) view(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+func (t *tbfe) theme(w http.ResponseWriter, req *http.Request) {
+	log.Debug("theme: %s", req)
+
+	reqpath, _ := url.QueryUnescape(req.RequestURI)
+
+	// Make sure the URL starts with "/themes/"
+	// Don't allow ".." in URLs
+	if !strings.HasPrefix(reqpath, "/themes/") || strings.Index(reqpath, "..") != -1 {
+		w.WriteHeader(404)
+		return
+	}
+
+	filepath := path.Join("../../packages", reqpath)
+
+	exists := false
+	if s, err := os.Stat(filepath); err == nil {
+		if !s.IsDir() {
+			exists = true
+		}
+	}
+
+	if exists {
+		fi, err := os.Open(filepath)
+		if err != nil {
+			w.WriteHeader(500)
+			log.Error(err)
+			return
+		}
+
+		defer fi.Close()
+
+		io.Copy(w, fi)
+	} else {
+		w.WriteHeader(404)
+	}
+}
+
 func (t *tbfe) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	s := time.Now()
 	w.Header().Set("Content-Type", "text/html")
-	log4go.Debug("Serving client: %s", req)
+	log.Debug("Serving client: %s", req)
 
 	c := scheme.Spice(&render.ViewRegions{})
 
-	fmt.Fprintf(w, `<html><body style="white-space:pre; color:#%s; background-color:#%s">
-                <script type="text/javascript">
-
-window.setInterval(function(){checkReload()}, 200);
-function checkReload() {
-    xmlhttp = new XMLHttpRequest();
-    xmlhttp.onreadystatechange = function() {
-        if (xmlhttp.readyState==4 && xmlhttp.status==200) {
-	        document.getElementById('contents').innerHTML = xmlhttp.responseText;
-	    }
-    };
-    xmlhttp.open("GET", "/view", true);
-    xmlhttp.send();
-}
-
-
-window.onkeydown = function(e)
-{
-	console.log(e);
-    xmlhttp = new XMLHttpRequest();
-	var data = new FormData();
-	for (var key in e) {
-		data.append(key, e[key]);
+	html, err := ioutil.ReadFile("index.html")
+	if err != nil {
+		w.WriteHeader(404)
+		panic(err)
 	}
 
-    xmlhttp.open("POST", "/key", true);
-    xmlhttp.send(data);
-    e.preventDefault();
+	r := strings.NewReplacer("{{foregroundColor}}", htmlcol(c.Foreground), "{{backgroundColor}}", htmlcol(c.Background))
+	r.WriteString(w, string(html))
+
+	log.Debug("Done serving client: %s", time.Since(s))
 }
-                </script>
-    <div id="contents" />
-`, htmlcol(c.Foreground), htmlcol(c.Background))
-	io.WriteString(w, "</body></html>")
-	log4go.Debug("Done serving client: %s", time.Since(s))
+
+var clients []*websocket.Conn
+
+func (t *tbfe) WebsocketServer(ws *websocket.Conn) {
+	clients = append(clients, ws)
+
+	// Send status message
+	if t.status_message != "" {
+		websocket.JSON.Send(ws, map[string]string{"type": "statusMessage", "msg": t.status_message})
+	}
+
+	// Send cursor position
+	websocket.JSON.Send(ws, t.GetSelectionMessage(backend.GetEditor().ActiveWindow().ActiveView()))
+
+	// Send editor content
+	var buf bytes.Buffer
+	t.render(bufio.NewWriter(&buf))
+	websocket.Message.Send(ws, buf.Bytes())
+	buf.Reset()
+
+	var data map[string]interface{}
+	var kp keys.KeyPress
+	for {
+		err := websocket.JSON.Receive(ws, &data)
+		if err != nil {
+			log.Error(err)
+			return
+		}
+		//log.LogDebug("Received: %s", data)
+
+		msgType := data["type"].(string)
+
+		if msgType == "key" {
+			kp.Alt = data["altKey"].(bool)
+			kp.Ctrl = data["ctrlKey"].(bool)
+			kp.Super = data["metaKey"].(bool)
+			kp.Shift = data["shiftKey"].(bool)
+
+			if keyName, ok := data["key"].(string); ok {
+				if utf8.RuneCountInString(keyName) == 1 { // One char
+					r, _ := utf8.DecodeRuneInString(keyName)
+					kp.Key = keys.Key(int64(r))
+				} else {
+					// TODO: automatic lookup instead of this manual lookup
+					// See https://github.com/limetext/lime/pull/421/files#r19269236
+					keymap := map[string]keys.Key{
+						"ArrowLeft":   keys.Left,
+						"ArrowUp":     keys.Up,
+						"ArrowRight":  keys.Right,
+						"ArrowDown":   keys.Down,
+						"Left":        keys.Left,
+						"Up":          keys.Up,
+						"Right":       keys.Right,
+						"Down":        keys.Down,
+						"Enter":       keys.Enter,
+						"Escape":      keys.Escape,
+						"Backspace":   keys.Backspace,
+						"Delete":      keys.Delete,
+						"Del":         keys.Delete, // Deprecated: some old browsers still use "Del" instead of "Delete"
+						"KeypadEnter": keys.KeypadEnter,
+						"F1":          keys.F1,
+						"F2":          keys.F2,
+						"F3":          keys.F3,
+						"F4":          keys.F4,
+						"F5":          keys.F5,
+						"F6":          keys.F6,
+						"F7":          keys.F7,
+						"F8":          keys.F8,
+						"F9":          keys.F9,
+						"F10":         keys.F10,
+						"F11":         keys.F11,
+						"F12":         keys.F12,
+						"Insert":      keys.Insert,
+						"PageUp":      keys.PageUp,
+						"PageDown":    keys.PageDown,
+						"Home":        keys.Home,
+						"End":         keys.End,
+						"Break":       keys.Break,
+					}
+
+					if key, ok := keymap[keyName]; ok {
+						kp.Key = key
+					} else {
+						log.Debug("Unknown key: %s", keyName)
+						continue
+					}
+				}
+			} else {
+				v := int64(data["keyCode"].(float64))
+				if !kp.Shift {
+					v = int64(unicode.ToLower(rune(v)))
+				}
+				kp.Key = keys.Key(v)
+			}
+
+			backend.GetEditor().HandleInput(kp)
+		} else if msgType == "command" {
+			command := data["name"].(string)
+			//args := data["args"].([]string) //TODO: add arguments support
+
+			ed := backend.GetEditor()
+			go ed.RunCommand(command, make(backend.Args))
+		} else {
+			log.Info("Unhandled message type: %s", msgType)
+		}
+	}
+}
+
+func (t *tbfe) BroadcastData(data map[string]interface{}) {
+	for _, ws := range clients {
+		websocket.JSON.Send(ws, data)
+	}
+}
+
+func (t *tbfe) SetDirty() {
+	t.dirty = true
+
+	var buf bytes.Buffer
+	t.render(bufio.NewWriter(&buf))
+	for _, ws := range clients {
+		websocket.Message.Send(ws, buf.Bytes())
+	}
+}
+
+func (t *tbfe) GetSelectionMessage(v *backend.View) map[string]interface{} {
+	return map[string]interface{}{
+		"type": "selection",
+		"sel":  v.Sel().Regions(),
+	}
 }
 
 func (t *tbfe) loop() {
 	backend.OnNew.Add(func(v *backend.View) {
-		v.Settings().AddOnChange("lime.frontend.html.render", func(name string) { t.dirty = true })
+		v.Settings().AddOnChange("lime.frontend.html.render", func(name string) {
+			if name != "lime.syntax.updated" {
+				return
+			}
+			t.SetDirty()
+		})
 	})
-	backend.OnModified.Add(func(v *backend.View) {
-		t.dirty = true
-	})
+	// TODO: maybe not useful?
+	/*backend.OnModified.Add(func(v *backend.View) {
+		t.SetDirty()
+	})*/
 	backend.OnSelectionModified.Add(func(v *backend.View) {
-		t.dirty = true
+		t.BroadcastData(t.GetSelectionMessage(v))
 	})
 
 	ed := backend.GetEditor()
@@ -288,8 +465,8 @@ func (t *tbfe) loop() {
 	ed.LogInput(false)
 	ed.LogCommands(false)
 	c := ed.Console()
-	if sc, err := textmate.LoadTheme("../../3rdparty/bundles/TextMate-Themes/GlitterBomb.tmTheme"); err != nil {
-		log4go.Error(err)
+	if sc, err := textmate.LoadTheme("../../packages/themes/TextMate-Themes/Monokai.tmTheme"); err != nil {
+		log.Error(err)
 	} else {
 		scheme = sc
 	}
@@ -300,9 +477,9 @@ func (t *tbfe) loop() {
 
 	w := ed.NewWindow()
 	v := w.OpenFile("main.go", 0)
-	v.Settings().Set("trace", true)
-	v.Settings().Set("syntax", "../../3rdparty/bundles/go.tmbundle/Syntaxes/Go.tmLanguage")
-	c.Buffer().AddCallback(t.scroll)
+	//v.Settings().Set("trace", true)
+	v.Settings().Set("syntax", "../../packages/go.tmbundle/Syntaxes/Go.tmLanguage")
+	c.Buffer().AddObserver(t)
 
 	sel := v.Sel()
 	sel.Clear()
@@ -327,18 +504,21 @@ func (t *tbfe) loop() {
 		ed.Init()
 		sublime.Init()
 	}()
-	log4go.Debug("serving")
-	http.HandleFunc("/key", t.key)
+	log.Debug("Serving on port %d", *port)
 	http.HandleFunc("/", t.ServeHTTP)
 	http.HandleFunc("/view", t.view)
-	if err := http.ListenAndServe("localhost:8080", nil); err != nil {
-		log4go.Error("Error serving: %s", err)
+	http.HandleFunc("/key", t.key)
+	http.HandleFunc("/themes/", t.theme)
+	http.Handle("/ws", websocket.Handler(t.WebsocketServer))
+	if err := http.ListenAndServe(fmt.Sprintf("localhost:%d", *port), nil); err != nil {
+		log.Errorf("Error serving: %s", err)
 	}
-	log4go.Debug("Done")
+	log.Debug("Done")
 }
 
 func main() {
-	log4go.AddFilter("file", log4go.FINEST, log4go.NewConsoleLogWriter())
+	flag.Parse()
+	log.AddFilter("file", log.FINEST, log.NewConsoleLogWriter())
 	defer func() {
 		py.NewLock()
 		py.Finalize()

@@ -5,18 +5,20 @@
 package backend
 
 import (
-	"code.google.com/p/log4go"
 	"fmt"
+	"github.com/limetext/lime/backend/log"
+	"github.com/limetext/lime/backend/packages"
 	"github.com/limetext/lime/backend/parser"
 	"github.com/limetext/lime/backend/render"
 	"github.com/limetext/lime/backend/textmate"
 	. "github.com/limetext/lime/backend/util"
 	"github.com/limetext/rubex"
-	. "github.com/quarnster/util/text"
+	. "github.com/limetext/text"
 	"io/ioutil"
 	"os"
 	"path"
 	"reflect"
+	"regexp"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -42,33 +44,22 @@ type (
 		editstack   []*Edit
 		lock        sync.Mutex
 		reparseChan chan parseReq
+		status      map[string]string
 	}
 	parseReq struct {
 		forced bool
-	}
-
-	// The Edit object is an internal type passed as an argument
-	// to a TextCommand. All text operations need to be associated
-	// with a valid Edit object.
-	//
-	// Think of it a bit like an SQL transaction.
-	Edit struct {
-		invalid    bool
-		composite  CompositeAction
-		savedSel   RegionSet
-		savedCount int
-		command    string
-		args       Args
-		v          *View
-		bypassUndo bool
 	}
 )
 
 func newView(w *Window) *View {
 	ret := &View{window: w, regions: make(render.ViewRegionMap)}
+	ret.status = make(map[string]string)
+	ret.loadSettings()
+
 	ret.Settings().AddOnChange("lime.view.syntax", func(name string) {
 		ret.lock.Lock()
 		defer ret.lock.Unlock()
+
 		if name != "syntax" {
 			return
 		}
@@ -86,47 +77,27 @@ func newView(w *Window) *View {
 	return ret
 }
 
-func newEdit(v *View) *Edit {
-	ret := &Edit{
-		v:          v,
-		savedCount: v.buffer.ChangeCount(),
-	}
-	for _, r := range v.Sel().Regions() {
-		ret.savedSel.Add(r)
-	}
-	return ret
-}
-
-// Returns a string describing this Edit object. Should typically not be manually called.
-func (e *Edit) String() string {
-	return fmt.Sprintf("%s: %v, %v, %v", e.command, e.args, e.bypassUndo, e.composite)
-}
-
-// Applies the action of this Edit object. Should typically not be manually called.
-func (e *Edit) Apply() {
-	e.composite.Apply()
-}
-
-// Reverses the application of this Edit object. Should typically not be manually called.
-func (e *Edit) Undo() {
-	e.composite.Undo()
-	e.v.Sel().Clear()
-	for _, r := range e.savedSel.Regions() {
-		e.v.Sel().Add(r)
-	}
-}
-
 func (v *View) setBuffer(b Buffer) error {
 	if v.buffer != nil {
 		return fmt.Errorf("There is already a buffer set")
 	}
 	v.buffer = b
 	// TODO(q): Dynamically load the correct syntax file
-	b.AddCallback(func(_ Buffer, position, delta int) {
-		v.flush(position, delta)
-	})
+	b.AddObserver(v)
 	return nil
 }
+
+// BufferObserver
+
+func (v *View) Erased(changed_buffer Buffer, region_removed Region, data_removed []rune) {
+	v.flush(region_removed.B, region_removed.A-region_removed.B)
+}
+
+func (v *View) Inserted(changed_buffer Buffer, region_inserted Region, data_inserted []rune) {
+	v.flush(region_inserted.A, region_inserted.B-region_inserted.A)
+}
+
+// End of Buffer Observer
 
 // Flush is called every time the underlying buffer is changed.
 // It calls Adjust() on all the regions associated with this view,
@@ -179,53 +150,61 @@ func (v *View) parsethread() {
 		defer p.Exit()
 		defer func() {
 			if r := recover(); r != nil {
-				log4go.Error("Panic in parse thread: %v\n%s", r, string(debug.Stack()))
+				log.Errorf("Panic in parse thread: %v\n%s", r, string(debug.Stack()))
 				if pc > 0 {
 					panic(r)
 				}
 				pc++
 			}
 		}()
-		b := v.Buffer()
-		b.Lock()
+
+		b := v.buffer
 		sub := b.Substr(Region{0, b.Size()})
-		b.Unlock()
+
 		source, _ := v.Settings().Get("syntax", "").(string)
 		if len(source) == 0 {
 			return
 		}
+
 		// TODO: Allow other parsers instead of this hardcoded textmate version
 		pr, err := textmate.NewLanguageParser(source, sub)
 		if err != nil {
-			log4go.Error("Couldn't parse: %v", err)
+			log.Errorf("Couldn't parse: %v", err)
 			return
 		}
+
 		syn, err := parser.NewSyntaxHighlighter(pr)
 		if err != nil {
-			log4go.Error("Couldn't create syntaxhighlighter: %v", err)
+			log.Errorf("Couldn't create syntaxhighlighter: %v", err)
 			return
 		}
+
 		// Only set if it isn't invalid already, otherwise the
 		// current syntax highlighting will be more accurate
 		// as it will have had incremental adjustments done to it
 		if v.buffer.ChangeCount() != lastParse {
 			return
 		}
+
 		v.lock.Lock()
 		defer v.lock.Unlock()
+
 		v.syntax = syn
 		for k := range v.regions {
 			if strings.HasPrefix(k, "lime.syntax") {
 				delete(v.regions, k)
 			}
 		}
+
 		for k, v2 := range syn.Flatten() {
 			if v2.Regions.HasNonEmpty() {
 				v.regions[k] = v2
 			}
 		}
+
 		return true
 	}
+
 	v.lock.Lock()
 	ch := v.reparseChan
 	v.lock.Unlock()
@@ -233,6 +212,7 @@ func (v *View) parsethread() {
 	if ch == nil {
 		return
 	}
+
 	for pr := range ch {
 		if cc := v.buffer.ChangeCount(); lastParse != cc || pr.forced {
 			lastParse = cc
@@ -265,7 +245,6 @@ func (v *View) reparse(forced bool) {
 // Will load view settings respect to current syntax
 // e.g if current syntax is Python settings order will be:
 // Packages/Python/Python.sublime-settings
-// Packages/Python/Python (Windows).sublime-settings
 // Packages/User/Python.sublime-settings
 // <Buffer Specific Settings>
 func (v *View) loadSettings() {
@@ -276,26 +255,22 @@ func (v *View) loadSettings() {
 		return
 	}
 
-	defSettings, usrSettings, platSettings := &HasSettings{}, &HasSettings{}, &HasSettings{}
+	defSettings, usrSettings := &HasSettings{}, &HasSettings{}
 
 	defSettings.Settings().SetParent(v.window)
-	platSettings.Settings().SetParent(defSettings)
-	usrSettings.Settings().SetParent(platSettings)
+	usrSettings.Settings().SetParent(defSettings)
 	v.Settings().SetParent(usrSettings)
 
 	ed := GetEditor()
 	if r, err := rubex.Compile(`([A-Za-z]+?)\.(?:[^.]+)$`); err != nil {
-		log4go.Error(err)
+		log.Error(err)
 		return
 	} else if s := r.FindStringSubmatch(syntax); s != nil {
 		p := path.Join(LIME_PACKAGES_PATH, s[1], s[1]+".sublime-settings")
-		ed.loadSetting(NewPacket(p, defSettings.Settings()))
+		ed.load(packages.NewPacket(p, defSettings.Settings()))
 
-		p = path.Join(LIME_PACKAGES_PATH, s[1], s[1]+" ("+ed.plat()+").sublime-settings")
-		ed.loadSetting(NewPacket(p, platSettings.Settings()))
-
-		p = path.Join(LIME_USER_PACKETS_PATH, s[1]+".sublime-settings")
-		ed.loadSetting(NewPacket(p, usrSettings.Settings()))
+		p = path.Join(LIME_USER_PACKAGES_PATH, s[1]+".sublime-settings")
+		ed.load(packages.NewPacket(p, usrSettings.Settings()))
 	}
 }
 
@@ -438,7 +413,7 @@ func (v *View) BeginEdit() *Edit {
 func (v *View) EndEdit(edit *Edit) {
 	if edit.invalid {
 		// This happens when nesting Edits and the child Edit ends after the parent edit.
-		log4go.Fine("This edit has already been invalidated: %v, %v", edit, v.editstack)
+		log.Fine("This edit has already been invalidated: %v, %v", edit, v.editstack)
 		return
 	}
 
@@ -453,7 +428,7 @@ func (v *View) EndEdit(edit *Edit) {
 	}
 	if i == -1 {
 		// TODO(.): Under what instances does this happen again?
-		log4go.Error("This edit isn't even in the stack... where did it come from? %v, %v", edit, v.editstack)
+		log.Errorf("This edit isn't even in the stack... where did it come from? %v, %v", edit, v.editstack)
 		return
 	}
 
@@ -461,7 +436,7 @@ func (v *View) EndEdit(edit *Edit) {
 
 	if l := len(v.editstack) - 1; i != l {
 		// TODO(.): See TODO in BeginEdit
-		log4go.Error("This edit wasn't last in the stack... %d !=  %d: %v, %v", i, l, edit, v.editstack)
+		log.Errorf("This edit wasn't last in the stack... %d !=  %d: %v, %v", i, l, edit, v.editstack)
 	}
 
 	// Invalidate all Edits "below" and including this Edit.
@@ -474,7 +449,7 @@ func (v *View) EndEdit(edit *Edit) {
 		if !eq && !sel_same {
 			selection_modified = true
 		}
-		if v.scratch || current_edit.bypassUndo || eq {
+		if v.IsScratch() || current_edit.bypassUndo || eq {
 			continue
 		}
 		switch {
@@ -505,24 +480,32 @@ func (v *View) EndEdit(edit *Edit) {
 // Sets the scratch property of the view.
 // TODO(.): Couldn't this just be a value in the View's Settings?
 func (v *View) SetScratch(s bool) {
+	v.lock.Lock()
+	defer v.lock.Unlock()
 	v.scratch = s
 }
 
 // Checks the scratch property of the view.
 // TODO(.): Couldn't this just be a value in the View's Settings?
 func (v *View) IsScratch() bool {
+	v.lock.Lock()
+	defer v.lock.Unlock()
 	return v.scratch
 }
 
 // Sets the overwrite status property of the view.
 // TODO(.): Couldn't this just be a value in the View's Settings?
 func (v *View) OverwriteStatus() bool {
+	v.lock.Lock()
+	defer v.lock.Unlock()
 	return v.overwrite
 }
 
 // Checks the overwrite status property of the view.
 // TODO(.): Couldn't this just be a value in the View's Settings?
 func (v *View) SetOverwriteStatus(s bool) {
+	v.lock.Lock()
+	defer v.lock.Unlock()
 	v.overwrite = s
 }
 
@@ -532,8 +515,29 @@ func (v *View) IsDirty() bool {
 	if v.IsScratch() {
 		return false
 	}
-	lastSave, _ := v.buffer.Settings().Get("lime.last_save_change_count", -1).(int)
+	lastSave, _ := v.Settings().Get("lime.last_save_change_count", -1).(int)
 	return v.buffer.ChangeCount() != lastSave
+}
+
+func (v *View) FileChanged(filename string) {
+	log.Finest("Reloading %s", filename)
+
+	if saving, ok := v.Settings().Get("lime.saving", false).(bool); ok && saving {
+		// This reload was triggered by ourselves saving to this file, so don't reload it
+		return
+	}
+	if !GetEditor().Frontend().OkCancelDialog("File was changed by another program, reload?", "reload") {
+		return
+	}
+
+	if d, err := ioutil.ReadFile(filename); err != nil {
+		log.Errorf("Could not read file: %s\n. Error was: %v", filename, err)
+	} else {
+		edit := v.BeginEdit()
+		end := v.buffer.Size()
+		v.Replace(edit, Region{0, end}, string(d))
+		v.EndEdit(edit)
+	}
 }
 
 // Saves the file
@@ -543,7 +547,7 @@ func (v *View) Save() error {
 
 // Saves the file to the specified filename
 func (v *View) SaveAs(name string) (err error) {
-	log4go.Fine("SaveAs(%s)", name)
+	log.Fine("SaveAs(%s)", name)
 	v.Settings().Set("lime.saving", true)
 	defer v.Settings().Erase("lime.saving")
 	var atomic bool
@@ -562,7 +566,7 @@ func (v *View) SaveAs(name string) (err error) {
 			return err
 		}
 		if err := os.Rename(tmpf, name); err != nil {
-			// When we wan't to save as a file in another directory
+			// When we want to save as a file in another directory
 			// we can't go with os.Rename so we need to force
 			// not atomic saving sometimes as 4th test in TestSaveAsOpenFile
 			if err := v.nonAtomicSave(name); err != nil {
@@ -575,14 +579,15 @@ func (v *View) SaveAs(name string) (err error) {
 	}
 
 	ed := GetEditor()
-	if v.buffer.FileName() != name {
-		v.Buffer().SetFileName(name)
-		// TODO(.): There could be multiple watchers tied to a single filename...
-		ed.UnWatch(v.buffer.FileName())
-		ed.Watch(NewWatchedUserFile(v))
+	if fn := v.buffer.FileName(); fn != name {
+		v.buffer.SetFileName(name)
+		if fn != "" {
+			ed.UnWatch(fn, v)
+		}
+		ed.Watch(name, v)
 	}
 
-	v.buffer.Settings().Set("lime.last_save_change_count", v.buffer.ChangeCount())
+	v.Settings().Set("lime.last_save_change_count", v.buffer.ChangeCount())
 	OnPostSave.Call(v)
 	return nil
 }
@@ -618,7 +623,7 @@ func (v *View) runCommand(cmd TextCommand, name string) error {
 	defer func() {
 		v.EndEdit(e)
 		if r := recover(); r != nil {
-			log4go.Error("Paniced while running text command %s %v: %v\n%s", name, cmd, r, string(debug.Stack()))
+			log.Errorf("Paniced while running text command %s %v: %v\n%s", name, cmd, r, string(debug.Stack()))
 		}
 	}()
 	p := Prof.Enter("view.cmd." + name)
@@ -669,6 +674,8 @@ func (v *View) UndoStack() *UndoStack {
 // Transform() takes a ColourScheme and a viewport and returns a Recipe suitable
 // for rendering the contents of this View that is visible in that viewport.
 func (v *View) Transform(scheme render.ColourScheme, viewport Region) render.Recipe {
+	pe := Prof.Enter("view.Transform")
+	defer pe.Exit()
 	v.lock.Lock()
 	defer v.lock.Unlock()
 	if v.syntax == nil {
@@ -676,7 +683,7 @@ func (v *View) Transform(scheme render.ColourScheme, viewport Region) render.Rec
 	}
 	rr := make(render.ViewRegionMap)
 	for k, v := range v.regions {
-		rr[k] = v.Clone()
+		rr[k] = *v.Clone()
 	}
 	rs := render.ViewRegions{Flags: render.SELECTION}
 	rs.Regions.AddAll(v.selection.Regions())
@@ -700,16 +707,17 @@ func (v *View) isClosed() bool {
 }
 
 // Initiate the "close" operation of this view.
-func (v *View) Close() {
+// Returns "true" if the view was closed. Otherwise returns "false".
+func (v *View) Close() bool {
 	OnPreClose.Call(v)
 	if v.IsDirty() {
 		close_anyway := GetEditor().Frontend().OkCancelDialog("File has been modified since last save, close anyway?", "Close")
 		if !close_anyway {
-			return
+			return false
 		}
 	}
 	if n := v.buffer.FileName(); n != "" {
-		GetEditor().UnWatch(n)
+		GetEditor().UnWatch(n, v)
 	}
 
 	// Call the event first while there's still access possible to the underlying
@@ -724,6 +732,8 @@ func (v *View) Close() {
 	defer v.lock.Unlock()
 	close(v.reparseChan)
 	v.reparseChan = nil
+
+	return true
 }
 
 const (
@@ -741,12 +751,14 @@ const (
 	CLASS_WORD_END_WITH_PUNCTUATION
 	CLASS_OPENING_PARENTHESIS
 	CLASS_CLOSING_PARENTHESIS
+
+	DEFAULT_SEPARATORS = "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^`{|}~]"
 )
 
 // Classifies point, returning a bitwise OR of zero or more of defined flags
 func (v *View) Classify(point int) (res int) {
 	var a, b string = "", ""
-	ws := v.Settings().Get("word_separators", "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~]").(string)
+	ws := v.Settings().Get("word_separators", DEFAULT_SEPARATORS).(string)
 	if point > 0 {
 		a = v.buffer.Substr(Region{point - 1, point})
 	}
@@ -754,54 +766,61 @@ func (v *View) Classify(point int) (res int) {
 		b = v.buffer.Substr(Region{point, point + 1})
 	}
 
-	// Special cases
+	// Out of range
 	if v.buffer.Size() == 0 || point < 0 || point > v.buffer.Size() {
 		res = 3520
 		return
 	}
+
+	// If before and after the point are separators return 0
+	if re, err := rubex.Compile(ws); err != nil {
+		log.Error(err)
+	} else if a == b && re.MatchString(a) {
+		res = 0
+		return
+	}
+
+	// SubWord start & end
 	if re, err := rubex.Compile("[A-Z]"); err != nil {
-		log4go.Error(err)
+		log.Error(err)
 	} else {
 		if re.MatchString(b) && !re.MatchString(a) {
 			res |= CLASS_SUB_WORD_START
 			res |= CLASS_SUB_WORD_END
 		}
 	}
-	if a == "," {
-		res |= CLASS_OPENING_PARENTHESIS
+	if a == "_" && b != "_" {
+		res |= CLASS_SUB_WORD_START
 	}
-	if b == "," {
-		res |= CLASS_CLOSING_PARENTHESIS
+	if b == "_" && a != "_" {
+		res |= CLASS_SUB_WORD_END
 	}
-	if a == "," && b == "," {
-		res = 0
-		return
-	}
+
 	// Punc start & end
 	if re, err := rubex.Compile(ws); err != nil {
-		log4go.Error(err)
+		log.Error(err)
 	} else {
-		if (re.MatchString(b) || b == "") && !re.MatchString(a) {
+		// Why ws != ""? See https://github.com/limetext/rubex/issues/2
+		if ((re.MatchString(b) && ws != "") || b == "") && !(re.MatchString(a) && ws != "") {
 			res |= CLASS_PUNCTUATION_START
 		}
-		if (re.MatchString(a) || a == "") && !re.MatchString(b) {
+		if ((re.MatchString(a) && ws != "") || a == "") && !(re.MatchString(b) && ws != "") {
 			res |= CLASS_PUNCTUATION_END
 		}
 		// Word start & end
 		if re1, err := rubex.Compile("\\w"); err != nil {
-			log4go.Error(err)
+			log.Error(err)
 		} else if re2, err := rubex.Compile("\\s"); err != nil {
-			log4go.Error(err)
+			log.Error(err)
 		} else {
-			if re1.MatchString(b) && (re.MatchString(a) || re2.MatchString(a) || a == "") {
+			if re1.MatchString(b) && ((re.MatchString(a) && ws != "") || re2.MatchString(a) || a == "") {
 				res |= CLASS_WORD_START
 			}
-			if re1.MatchString(a) && (re.MatchString(b) || re2.MatchString(b) || b == "") {
+			if re1.MatchString(a) && ((re.MatchString(b) && ws != "") || re2.MatchString(b) || b == "") {
 				res |= CLASS_WORD_END
 			}
 		}
 	}
-	// SubWord start & end
 
 	// Line start & end
 	if a == "\n" || a == "" {
@@ -809,72 +828,146 @@ func (v *View) Classify(point int) (res int) {
 	}
 	if b == "\n" || b == "" {
 		res |= CLASS_LINE_END
+		if ws == "" {
+			res |= CLASS_WORD_END
+		}
 	}
+
 	// Empty line
 	if (a == "\n" && b == "\n") || (a == "" && b == "") {
 		res |= CLASS_EMPTY_LINE
 	}
 	// Middle word
 	if re, err := rubex.Compile("\\w"); err != nil {
-		log4go.Error(err)
+		log.Error(err)
 	} else {
 		if re.MatchString(a) && re.MatchString(b) {
 			res |= CLASS_MIDDLE_WORD
 		}
 	}
+
 	// Word start & end with punc
 	if re, err := rubex.Compile("\\s"); err != nil {
-		log4go.Error(err)
+		log.Error(err)
 	} else {
-		if (res&CLASS_PUNCTUATION_START == CLASS_PUNCTUATION_START) && (re.MatchString(a) || a == "") {
+		if (res&CLASS_PUNCTUATION_START != 0) && (re.MatchString(a) || a == "") {
 			res |= CLASS_WORD_START_WITH_PUNCTUATION
 		}
-		if (res&CLASS_PUNCTUATION_END == CLASS_PUNCTUATION_END) && (re.MatchString(b) || b == "") {
+		if (res&CLASS_PUNCTUATION_END != 0) && (re.MatchString(b) || b == "") {
 			res |= CLASS_WORD_END_WITH_PUNCTUATION
 		}
 	}
+
 	// Openning & closing parentheses
 	if re, err := rubex.Compile("[(\\[{]"); err != nil {
-		log4go.Error(err)
+		log.Error(err)
 	} else {
 		if re.MatchString(a) || re.MatchString(b) {
 			res |= CLASS_OPENING_PARENTHESIS
 		}
-		if re.MatchString(a) && a == b {
-			res = 0
-			return
-		}
 	}
 	if re, err := rubex.Compile("[)\\]}]"); err != nil {
-		log4go.Error(err)
+		log.Error(err)
 	} else {
 		if re.MatchString(a) || re.MatchString(b) {
 			res |= CLASS_CLOSING_PARENTHESIS
 		}
-		if re.MatchString(a) && a == b {
-			res = 0
-			return
-		}
 	}
+	// TODO: isn't this a bug? what's the relation between
+	// ',' and parentheses
+	if a == "," {
+		res |= CLASS_OPENING_PARENTHESIS
+	}
+	if b == "," {
+		res |= CLASS_CLOSING_PARENTHESIS
+	}
+
 	return
 }
 
 // Finds the next location after point that matches the given classes
 // Searches backward if forward is false
-func (v *View) FindByClass(point int, forward bool, classes int) Region {
+func (v *View) FindByClass(point int, forward bool, classes int) int {
 	i := -1
 	if forward {
 		i = 1
 	}
-	for p := point; ; p += i {
+	size := v.buffer.Size()
+	// Sublime doesn't consider initial point even if it matches.
+	for p := point + i; ; p += i {
 		if p <= 0 {
-			return Region{0, 0}
+			return 0
 		}
-		if p >= v.buffer.Size() {
-			return Region{v.buffer.Size(), v.buffer.Size()}
+		if p >= size {
+			return size
 		}
-		if v.Classify(p)&classes == classes {
-			return Region{p, p}
+		if v.Classify(p)&classes != 0 {
+			return p
 		}
 	}
+}
+
+// Expands the selection until the point on each side matches the given classes
+func (v *View) ExpandByClass(r Region, classes int) Region {
+	// Sublime doesn't consider the points the region starts on.
+	// If not already on edge of buffer, expand by 1 in both directions.
+	a := r.A
+	if a > 0 {
+		a -= 1
+	} else if a < 0 {
+		a = 0
+	}
+
+	b := r.B
+	size := v.buffer.Size()
+	if b < size {
+		b += 1
+	} else if b > size {
+		b = size
+	}
+
+	for ; a > 0 && (v.Classify(a)&classes == 0); a -= 1 {
+	}
+	for ; b < size && (v.Classify(b)&classes == 0); b += 1 {
+	}
+	return Region{a, b}
+}
+
+const (
+	LITERAL = 1 << iota
+	IGNORECASE
+)
+
+func (v *View) Find(pat string, pos int, flags int) Region {
+	r := Region{pos, v.buffer.Size()}
+	s := v.buffer.Substr(r)
+
+	if flags&LITERAL != 0 {
+		pat = "\\Q" + pat
+	}
+	if flags&IGNORECASE != 0 {
+		pat = "(?im)" + pat
+	} else {
+		pat = "(?m)" + pat
+	}
+	// Using regexp instead of rubex because rubex doesn't
+	// support flag for treating pattern as a literal text
+	if re, err := regexp.Compile(pat); err != nil {
+		log.Error(err)
+	} else if loc := re.FindStringIndex(s); loc != nil {
+		return Region{pos + loc[0], pos + loc[1]}
+	}
+	return Region{-1, -1}
+}
+
+func (v *View) SetStatus(key string, val string) {
+	v.status[key] = val
+}
+
+func (v *View) GetStatus(key string) string {
+	return v.status[key]
+}
+
+func (v *View) EraseStatus(key string) {
+	delete(v.status, key)
 }

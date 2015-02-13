@@ -252,11 +252,15 @@ View
 	end_edit
 	erase
 	erase_regions
+	erase_status
+	expand_by_class
 	extract_scope
 	file_name
+	find
 	find_by_class
 	full_line
 	get_regions
+	get_status
 	has_non_empty_selection_region
 	id
 	insert
@@ -275,6 +279,7 @@ View
 	set_name
 	set_overwrite_status
 	set_scratch
+	set_status
 	set_syntax_file
 	settings
 	show
@@ -376,6 +381,7 @@ message_dialog
 new_window
 ok_cancel_dialog
 packages_path
+plat
 platform
 register
 run_command

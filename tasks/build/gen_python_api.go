@@ -11,7 +11,7 @@ package main
 import (
 	"fmt"
 	"github.com/limetext/lime/backend"
-	"github.com/quarnster/util/text"
+	"github.com/limetext/text"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -336,9 +336,6 @@ func generateWrapper(ptr reflect.Type, canCreate bool, ignorefunc func(name stri
 	}
 	ret += cons
 	ret += generatemethods(ptr, ignorefunc)
-	if ptr.Kind() != reflect.Struct {
-		ret += generatemethods(t, ignorefunc)
-	}
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
 		if !f.Anonymous && f.Name[0] == strings.ToUpper(f.Name[:1])[0] {
@@ -406,12 +403,12 @@ func main() {
 		{"./backend/sublime/region_generated.go", generateWrapper(reflect.TypeOf(text.Region{}), true, regexp.MustCompile("Cut").MatchString)},
 		{"./backend/sublime/regionset_generated.go", generateWrapper(reflect.TypeOf(&text.RegionSet{}), false, regexp.MustCompile("Less|Swap|Adjust|Has|Cut").MatchString)},
 		{"./backend/sublime/edit_generated.go", generateWrapper(reflect.TypeOf(&backend.Edit{}), false, regexp.MustCompile("Apply|Undo").MatchString)},
-		{"./backend/sublime/view_generated.go", generateWrapper(reflect.TypeOf(&backend.View{}), false, regexp.MustCompile("Buffer|Syntax|CommandHistory|Show|AddRegions|UndoStack|Transform|Save|Close").MatchString)},
+		{"./backend/sublime/view_generated.go", generateWrapper(reflect.TypeOf(&backend.View{}), false, regexp.MustCompile("Buffer|Syntax|CommandHistory|Show|AddRegions|UndoStack|Transform|Reload|Save|Close|ExpandByClass|Erased|FileChanged|Inserted|Find$").MatchString)},
 		{"./backend/sublime/window_generated.go", generateWrapper(reflect.TypeOf(&backend.Window{}), false, regexp.MustCompile("OpenFile|SetActiveView|Close").MatchString)},
 		{"./backend/sublime/settings_generated.go", generateWrapper(reflect.TypeOf(&text.Settings{}), false, regexp.MustCompile("Parent|Set|Get|UnmarshalJSON|MarshalJSON").MatchString)},
 		{"./backend/sublime/view_buffer_generated.go", generatemethodsEx(
 			reflect.TypeOf(backend.GetEditor().Console().Buffer()),
-			regexp.MustCompile("Erase|Insert|Substr|SetFile|AddCallback|Data|Runes|Settings|Index|Close|Unlock|Lock").MatchString,
+			regexp.MustCompile("Erase|Insert|Substr|SetFile|AddCallback|AddObserver|RemoveObserver|Data|Runes|Settings|Index|Close|Unlock|Lock").MatchString,
 			"o.data.Buffer().",
 			func(t reflect.Type, m reflect.Method) string {
 				mn := ""
@@ -436,7 +433,7 @@ func main() {
 			sn),
 		},
 		{"./backend/sublime/sublime_api_generated.go", generatemethodsEx(reflect.TypeOf(backend.GetEditor()),
-			regexp.MustCompile("Info|HandleInput|CommandHandler|Windows|Frontend|Console|SetActiveWindow|Init|Watch|Watcher").MatchString,
+			regexp.MustCompile("Info|HandleInput|CommandHandler|Windows|Frontend|Console|SetActiveWindow|Init|Watch|Observe|SetClipboardFuncs|KeyBindings").MatchString,
 			"backend.GetEditor().",
 			sn),
 		},
@@ -462,7 +459,7 @@ func main() {
 				"fmt"
 				"github.com/limetext/gopy/lib"
 				"github.com/limetext/lime/backend"
-				"github.com/quarnster/util/text"
+				"github.com/limetext/text"
 			)
 			var (
 				_ = backend.View{}

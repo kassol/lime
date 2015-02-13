@@ -5,11 +5,12 @@
 package textmate
 
 import (
-	"code.google.com/p/log4go"
 	"encoding/json"
 	"fmt"
 	"github.com/limetext/lime/backend/loaders"
+	"github.com/limetext/lime/backend/log"
 	"github.com/limetext/lime/backend/render"
+	"github.com/limetext/lime/backend/util"
 	"image/color"
 	"io/ioutil"
 	"sort"
@@ -75,7 +76,7 @@ func (c Color) String() string {
 func (c *Color) UnmarshalJSON(data []byte) error {
 	i64, err := strconv.ParseInt(string(data[2:len(data)-1]), 16, 64)
 	if err != nil {
-		log4go.Warn("Couldn't properly load color from %s: %s", string(data), err)
+		log.Warn("Couldn't properly load color from %s: %s", string(data), err)
 	}
 	c.A = uint8((i64 >> 24) & 0xff)
 	c.R = uint8((i64 >> 16) & 0xff)
@@ -104,6 +105,8 @@ func (s *Settings) UnmarshalJSON(data []byte) error {
 }
 
 func (t *Theme) ClosestMatchingSetting(scope string) *ScopeSetting {
+	pe := util.Prof.Enter("ClosestMatchingSetting")
+	defer pe.Exit()
 	na := scope
 	for len(na) > 0 {
 		sn := na
@@ -129,6 +132,8 @@ func (t *Theme) ClosestMatchingSetting(scope string) *ScopeSetting {
 }
 
 func (t *Theme) Spice(vr *render.ViewRegions) (ret render.Flavour) {
+	pe := util.Prof.Enter("Spice")
+	defer pe.Exit()
 	if len(t.Settings) == 0 {
 		return
 	}
